@@ -55,7 +55,7 @@ class Heartbeat:
     def __init__(self, config):
         # This path must point EXACTLY to your MT5 'Files' folder
         self.path = os.path.join(config["mt5_path"], "python_heartbeat.txt")
-        print("Link with MT5 - test2 version 1.0")
+        print("Link with MT5 - test2 version 1.1")
 
     def pulse(self):
         try:
