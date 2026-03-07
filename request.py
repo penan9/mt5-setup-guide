@@ -1,3 +1,4 @@
+from logging import config
 import os
 import time
 import json
@@ -153,170 +154,270 @@ class StrategyModule:
 
 # --- VISUALIZER ---
 class Visualizer:
-    def __init__(self, symbol, timeframe, sma_period, cmd_center):
-        self.symbol, self.timeframe, self.sma_period = symbol, timeframe, sma_period
-        self.cmd = cmd_center
-        self.last_chart_update = 0
+    def __init__(self, config, tf="M5", sma_period=20, cmd=None):
+        # 1. Basic Setup
+        self.mt5_path = config["mt5_path"]
+        self.active_symbol = config["active_symbol"]
+        self.timeframe = tf
         
-        # Use a specific figure number (e.g., 1) to make it easier to track
-        self.fig = plt.figure(1, figsize=(12, 8))
-        self.ax = self.fig.add_subplot(111)
+        # 2. Define ALL Attributes before using them
+        self.fig, self.ax = plt.subplots(figsize=(12, 8))
+        self.fig.patch.set_facecolor('#0d1117')
         
-        plt.subplots_adjust(bottom=0.25)
-        plt.ion()
+        # Define the Status Bar axis FIRST
+        self.ax_status = self.fig.add_axes([0.1, 0.88, 0.8, 0.08])
+        self.ax_status.set_axis_off()
+        
+        # Define Button Axes
+        self.ax_set = self.fig.add_axes([0.15, 0.04, 0.2, 0.06])
+        self.ax_tl  = self.fig.add_axes([0.40, 0.04, 0.2, 0.06])
+        self.ax_clr = self.fig.add_axes([0.65, 0.04, 0.2, 0.06])
+        
+        # 3. Create Buttons
+        self.btn_set = Button(self.ax_set, 'SET EXHAUSTION', color='#1f2937', hovercolor='#374151')
+        self.btn_tl  = Button(self.ax_tl, 'DRAW TREND', color='#1f2937', hovercolor='#374151')
+        self.btn_clr = Button(self.ax_clr, 'CLEAR ALL', color='#991b1b', hovercolor='#b91c1c')
+        
+        # 4. Attach Events
+        self.btn_set.on_clicked(self.trigger_set)
+        self.btn_tl.on_clicked(self.trigger_tl)
+        self.btn_clr.on_clicked(self.trigger_clear)
+        
+        # Optional: Add formatting to buttons
+        for b in [self.btn_set, self.btn_tl, self.btn_clr]:
+            b.label.set_color('white')
+            b.label.set_weight('bold')
 
-        # Force window title for easier identification
-        self.fig.canvas.manager.set_window_title(f"GOLD MASTER ENGINE - {self.symbol}")
+        # Connect them to the class methods
+        self.btn_set.on_clicked(self.trigger_set)
+        self.btn_tl.on_clicked(self.trigger_tl)
+        self.btn_clr.on_clicked(self.trigger_clear)
 
-        # UI Buttons (Persistent)
-        self.ax_trade = plt.axes([0.1, 0.05, 0.2, 0.075])
-        self.ax_mode  = plt.axes([0.4, 0.05, 0.2, 0.075])
-        self.ax_quit  = plt.axes([0.7, 0.05, 0.2, 0.075])
+        # 3. Finalize Window handle
+        plt.show(block=False)
+        plt.pause(0.5)
 
-        self.btn_trade = Button(self.ax_trade, 'TOGGLE TRADE', color='#2c3e50', hovercolor='#2ecc71')
-        self.btn_mode  = Button(self.ax_mode, 'CHANGE MODE', color='#2c3e50', hovercolor='#3498db')
-        self.btn_quit  = Button(self.ax_quit, 'SHUTDOWN', color='#c0392b', hovercolor='#e74c3c')
+    def trigger_set(self, event):
+        print(">>> PYTHON CLICKED: SET") # Check if this prints in your terminal
+        self._send_cmd("SET_INC")
 
-        for btn in [self.btn_trade, self.btn_mode, self.btn_quit]:
-            btn.label.set_color('#ecf0f1')
-            btn.label.set_fontweight('bold')
+    def _send_cmd(self, action):
+        cmd_path = os.path.join(self.mt5_path, f"{self.active_symbol}_cmd.csv")
+        try:
+            # Use 'w' to overwrite the old command immediately
+            with open(cmd_path, "w") as f:
+                f.write(f"{action}") # Just the action: DRAW_TL or SET_INC
+            print(f">>> SIGNAL SENT: {action}")
+        except Exception as e:
+            print(f"Command Error: {e}")
+            
+    def trigger_tl(self, event):
+        self._send_cmd("DRAW_TL")
 
-        self.btn_trade.on_clicked(self._on_trade_click)
-        self.btn_mode.on_clicked(self._on_mode_click)
-        self.btn_quit.on_clicked(self._on_quit_click)
+    def trigger_clear(self, event):
+        self._send_cmd("CLEAR")
 
-        self.status_text_obj = None
-
-    def _on_trade_click(self, event): self.cmd.toggle_trading()
-    def _on_mode_click(self, event): self.cmd.analysis_mode = "RSI" if self.cmd.analysis_mode == "SMA" else "SMA"
-    def _on_quit_click(self, event): plt.close(self.fig)
+    def update_dashboard_ui(self, online, tf, price):
+        """Update the top status text without clearing the whole chart"""
+        self.ax_status.clear()
+        self.ax_status.set_axis_off()
+        status_color = '#00FF00' if online else '#FF3131'
+        status_text = "● ONLINE" if online else "○ OFFLINE"
+        
+        # Draw the Dashboard Info
+        info = f"{status_text}  |  SYMBOL: {self.active_symbol}  |  TF: {tf}  |  LIVE: {price:.2f}"
+        self.ax_status.text(0.5, 0.5, info, transform=self.ax_status.transAxes,
+                           ha='center', va='center', color='white', 
+                           fontsize=12, fontweight='bold', bbox=dict(facecolor='#161b22', alpha=0.8))
+    
+    def send_mt5_cmd(self, action):
+        cmd_file = os.path.join(self.mt5_path, f"{self.active_symbol}_cmd.csv")
+        try:
+            with open(cmd_file, "w") as f:
+                f.write(f"CMD,{action}")
+        except Exception as e:
+            print(f"Error sending command: {e}")
 
     def update_chart(self, df_input, current_price, is_connected):
-        now = time.time()
-        
-        # 1. RENDER CANDLESTICKS (Throttled for Performance)
-        if now - self.last_chart_update > 1.0 and df_input is not None:
-            self.ax.clear()
-            df_plot = df_input.copy()
-            
-            if 'time' in df_plot.columns:
-                df_plot['time'] = pd.to_datetime(df_plot['time'])
-                df_plot.set_index('time', inplace=True)
-            
-            # Professional Dark Theme
-            mc = mpf.make_marketcolors(up='#00ff00', down='#ff0000', inherit=True)
-            s = mpf.make_mpf_style(base_mpl_style='dark_background', marketcolors=mc, gridstyle='--')
-            
-            # Strategy Overlay (SMA)
-            sma = df_plot['close'].rolling(window=self.sma_period).mean()
-            ap = mpf.make_addplot(sma, ax=self.ax, color='orange', width=1.2)
-            
-            # Execute Plot - Force ax assignment to prevent new window popup
-            mpf.plot(df_plot, type='candle', ax=self.ax, addplot=ap, style=s)
-            
-            # Live Price Line
-            if current_price: 
-                self.ax.axhline(current_price, color='white', linestyle='--', alpha=0.5)
-            
-            self.ax.set_title(f"GOLD MASTER ENGINE | {self.symbol}", color='cyan', fontsize=12, pad=20)
-            self.last_chart_update = now
-            self.status_text_obj = None 
+        # 1. Prepare DatetimeIndex
+        if not isinstance(df_input.index, pd.DatetimeIndex):
+            df_input.index = pd.to_datetime(df_input.index)
 
-        # 2. INTEGRATED HUD LOGIC
-        duration = self.cmd.get_state_duration()
-        # Change these lines:
-        sync_status = "ONLINE" if is_connected else "OFFLINE"
-        sync_color = "lime" if is_connected else "red"
+        self.ax.clear()
         
-        hud_content = (
-            f"--- SYSTEM STATUS ---\n"
-            f"MT5 LINK : {sync_status}\n"
-            f"STATE    : {'HUNTING' if self.cmd.trading_enabled else 'SCANNING'}\n"
-            f"MODE     : {self.cmd.analysis_mode}\n"
-            f"DURATION : {duration}\n"
-            f"TIMEFRAME: {self.timeframe}"
+        if df_input is None or df_input.empty:
+            self.ax.text(0.5, 0.5, "AWAITING MARKET DATA...", transform=self.ax.transAxes, 
+                         ha='center', va='center', color='white')
+            self.fig.canvas.draw()
+            return
+
+        # --- SYNC DATA FROM MT5 (Sets and Trendlines) ---
+        sync_file = os.path.join(self.mt5_path, f"{self.active_symbol}_sync.csv")
+        trendlines = []
+        set_count_text = "SET: 0"
+        display_price = f"{current_price:.2f}" if current_price is not None else "---"
+
+        # --- UPDATE TOP STATUS BAR ---
+        self.ax_status.clear()
+        self.ax_status.set_axis_off()
+
+        status_color = '#00FF00' if is_connected else '#FF3131'
+        status_text = "● MT5 ONLINE" if is_connected else "○ MT5 OFFLINE"
+        
+        # New Dashboard Text with safety check
+        info = f"{status_text}  |  TF: {self.timeframe}  |  {self.active_symbol}: {display_price}"
+        
+        self.ax_status.text(0.5, 0.5, info, transform=self.ax_status.transAxes,
+                           ha='center', va='center', color='white', 
+                           fontsize=11, fontweight='bold', 
+                           bbox=dict(facecolor='#161b22', alpha=0.9, edgecolor=status_color))
+        
+        if os.path.exists(sync_file):
+            try:
+                sync_data = pd.read_csv(sync_file, header=None)
+                for _, row in sync_data.iterrows():
+                    if row[0] == "SET":
+                        set_count_text = f"EXHAUSTION: SET {row[1]}"
+                    elif row[0] == "TL" and len(row) >= 6:
+                        t1 = pd.to_datetime(int(row[2]), unit='s')
+                        p1, t2 = float(row[3]), pd.to_datetime(int(row[4]), unit='s')
+                        p2 = float(row[5])
+                        trendlines.append([(t1, p1), (t2, p2)])
+            except: pass 
+
+        # --- CREATE BRIGHT NEON STYLE ---
+        # Up: Lime Green (#00FF00), Down: Bright Neon Red (#FF3131)
+        mc = mpf.make_marketcolors(
+            up='#00FF00', 
+            down='#FF3131', 
+            edge='inherit', 
+            wick='inherit', 
+            volume='inherit'
+        )
+        
+        # Creating a custom style that works specifically with your dark background
+        bright_style = mpf.make_mpf_style(
+            marketcolors=mc, 
+            base_mpf_style='charles', 
+            gridcolor='#1f2937' # Subtle dark grid
         )
 
-        # 3. RENDER CLEAN OVERLAY
-        if self.status_text_obj: 
-            self.status_text_obj.remove()
+        # --- DYNAMIC PLOTTING ARGUMENTS ---
+        plot_kwargs = {
+            'type': 'candle',
+            'ax': self.ax,
+            'style': bright_style, # Using the new bright style
+            'update_width_config': dict(candle_linewidth=0.8) # Slightly thicker for visibility
+        }
         
-        self.status_text_obj = self.ax.text(0.02, 0.96, hud_content, transform=self.ax.transAxes, 
-                                            color='white', fontsize=9, family='monospace',
-                                            verticalalignment='top',
-                                            bbox=dict(boxstyle='round,pad=0.5', 
-                                                      facecolor='#000000', 
-                                                      edgecolor=sync_color, 
-                                                      alpha=0.7))
+        if trendlines:
+            # Using Cyan for trendlines to contrast with the Neon Red/Green
+            plot_kwargs['alines'] = dict(alines=trendlines, colors='#00FFFF', linewidths=1.5, alpha=0.8)
 
-        # --- CRITICAL FIX FOR MAC: FORCE RENDER ---
-        self.fig.canvas.draw_idle()   # Prepare the pixels
-        self.fig.canvas.flush_events() # Push them to the screen
-        plt.show(block=False)         # Ensure window stays visible
+        # --- RENDER ---
+        try:
+            mpf.plot(df_input, **plot_kwargs)
+
+            # UI Overlays
+            status_color = '#00FF00' if is_connected else '#FF3131'
+            self.ax.text(0.02, 0.96, f"{'● ONLINE' if is_connected else '○ OFFLINE'}", 
+                         transform=self.ax.transAxes, color=status_color, fontweight='bold', fontsize=10)
+            
+            # Bright Yellow for your "Set" indicator
+            self.ax.text(0.02, 0.91, set_count_text, transform=self.ax.transAxes, 
+                         color='#FFFF00', fontweight='bold', fontsize=11)
+            
+            if current_price:
+                # White Gold text in the top right
+                self.ax.set_title(f"LIVE: {display_price}", color='white', loc='right', fontsize=10)
+
+        except Exception as e:
+            print(f"\n[Plot Error] {e}")
+
+        # Ensure background is consistently dark
+        self.ax.set_facecolor('#0d1117')
+        self.fig.canvas.draw()
 
 # --- MAIN ENGINE ---
 def main():
+    # 1. INITIALIZE CONFIG AND CORE MODULES
     config = ConfigLoader.load()
-    bridge = TradingBridge(config)
-    heartbeat = Heartbeat(config)
-    strategy = StrategyModule(config)
     cmd = CommandCenter(config)
     
-    print("\n>>> MASTER SYSTEM INITIALIZING...")
+    bridge = TradingBridge(config) 
+    heartbeat = Heartbeat(config)
     
-    # 1. WAIT FOR SYNC
+    # Logic Modules
+    strategy = StrategyModule(config)
+    
+    print("\n>>> MASTER SYSTEM INITIALIZING...")
+    print(f">>> TARGET SYMBOL: {config['active_symbol']}")
+
+    # 2. WAIT FOR INITIAL DATA SYNC
+    # Ensure MT5 has at least written the first price file
     while not os.path.exists(bridge.price_path):
         time.sleep(0.5)
-        sys.stdout.write("\r>>> SYNCING WITH MT5...")
+        sys.stdout.write("\r>>> SYNCING WITH MT5 FILES...")
         sys.stdout.flush()
-
-    # 2. START MATPLOTLIB PROPERLY
-    plt.close('all') # Clear any ghost processes
-    price, tf = bridge.get_price_and_tf()
-    viz = Visualizer(config["active_symbol"], tf, config["logic_settings"]["sma_period"], cmd)
     
+    # 3. INITIALIZE VISUALIZER
+    price_init, tf_init = bridge.get_price_and_tf()
+    # Now this matches the __init__ arguments exactly
+    viz = Visualizer(config, tf_init, config["logic_settings"]["sma_period"], cmd)
+    
+    # Give the OS (especially macOS) a moment to register the window handle
     plt.show(block=False)
-    plt.pause(1.0) # Give Mac a full second to register the window
+    plt.pause(1.0) 
 
     df = None
 
+    # 4. MAIN OPERATIONAL LOOP
     try:
-        # Use a simple flag instead of fignum_exists for the loop start
+        # Check if the figure window is still open
         while plt.fignum_exists(viz.fig.number):
+            # Maintain the connection pulse
             heartbeat.pulse()
             connected = bridge.is_connected()
 
-            # DATA PROCESSING
+            # GET LIVE DATA
             price, current_tf = bridge.get_price_and_tf()
-            
+            current_tf = current_tf.replace("PERIOD_", "")
+            # -------------------------
+            # HANDLE TIMEFRAME SWITCHING
             if viz.timeframe != current_tf:
-                print(f"\n>>> SWITCHING TO: {current_tf}")
+                print(f"\n>>> SWITCHING CHART TO: {current_tf}")
                 viz.timeframe = current_tf
                 viz.last_chart_update = 0 
                 df = None 
 
+            # REFRESH DATA FRAME
             if bridge.has_new_data() or df is None:
                 new_df = bridge.get_history_df()
                 if new_df is not None:
                     df = new_df
 
+            # RENDER CHART AND STATS
             if df is not None:
                 live_price = price if connected else None
+                
+                # This calls your updated update_chart with Set/Trendline sync
                 viz.update_chart(df, live_price, connected)
                 
-                # LIVE PRINTING
+                # CALCULATE TREND & PRINT STATUS
                 trend = strategy.calculate_trend(live_price, df) if live_price else "OFFLINE"
+                
                 sys.stdout.write(
                     f"\r[{current_tf}] PRICE: {live_price if live_price else '---':<10} | "
                     f"TREND: {trend:<12} | SYNC: {'OK' if connected else 'ERR'}"
                 )
                 sys.stdout.flush()
 
-            # The pulse of the GUI. If this is too fast, the window "dies".
+            # The pulse of the GUI. Essential for responsiveness.
             plt.pause(0.05) 
 
     except Exception as e:
         print(f"\n>>> SYSTEM ERROR: {e}")
+        # Optional: import traceback; traceback.print_exc() 
     finally:
         print("\n>>> System Offline. Goodbye.")
         plt.close('all')
