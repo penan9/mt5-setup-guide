@@ -104,6 +104,24 @@ class TradingBridge:
                 return False
             except: return False
 
+    def get_sync_data(self):
+            """Reads the sync file and returns a dictionary for the AI."""
+            sync_file = os.path.join(self.mt5_path, f"{self.symbol}_sync.csv")
+            data = {"set_count": 0, "trendlines": []}
+            if os.path.exists(sync_file):
+                try:
+                    df_sync = pd.read_csv(sync_file, header=None)
+                    for _, row in df_sync.iterrows():
+                        if row[0] == "SET":
+                            data["set_count"] = int(row[1])
+                        elif row[0] == "TL" and len(row) >= 6:
+                            data["trendlines"].append([
+                                (pd.to_datetime(int(row[2]), unit='s'), float(row[3])),
+                                (pd.to_datetime(int(row[4]), unit='s'), float(row[5]))
+                            ])
+                except: pass
+            return data
+
     def get_price_and_tf(self):
         try:
             with open(self.price_path, "r") as f:
@@ -153,27 +171,29 @@ class StrategyModule:
         return "BULLISH 📈" if price > sma else "BEARISH 📉"
 
 # --- VISUALIZER ---
+# --- VISUALIZER ---
 class Visualizer:
     def __init__(self, bridge, target_symbol):
-        # This creates the 'bridge' attribute that was missing
+        # 1. Assign the bridge and symbol
         self.bridge = bridge 
         self.active_symbol = target_symbol
-        self.last_printed_set = -1
-
-        # 1. Basic Setup
-        self.mt5_path = config["mt5_path"]
-        self.active_symbol = config["active_symbol"]
-        self.timeframe = tf
         
-        # 2. Define ALL Attributes before using them
+        # Pull necessary paths/config from the bridge or global config
+        self.mt5_path = bridge.mt5_path
+        self.timeframe = "M15" # Default starting TF
+        self.last_printed_set = -1
+        self.last_chart_update = 0
+
+        # 2. Setup Figure and Axes
+        # Use a dark theme for the "AI" look
         self.fig, self.ax = plt.subplots(figsize=(12, 8))
         self.fig.patch.set_facecolor('#0d1117')
         
-        # Define the Status Bar axis FIRST
+        # Define Status Bar (Top)
         self.ax_status = self.fig.add_axes([0.1, 0.88, 0.8, 0.08])
         self.ax_status.set_axis_off()
         
-        # Define Button Axes
+        # Define Button Axes (Bottom)
         self.ax_set = self.fig.add_axes([0.15, 0.04, 0.2, 0.06])
         self.ax_tl  = self.fig.add_axes([0.40, 0.04, 0.2, 0.06])
         self.ax_clr = self.fig.add_axes([0.65, 0.04, 0.2, 0.06])
@@ -183,22 +203,20 @@ class Visualizer:
         self.btn_tl  = Button(self.ax_tl, 'DRAW TREND', color='#1f2937', hovercolor='#374151')
         self.btn_clr = Button(self.ax_clr, 'CLEAR ALL', color='#991b1b', hovercolor='#b91c1c')
         
-        # 4. Attach Events
+        # 4. Attach Click Events
         self.btn_set.on_clicked(self.trigger_set)
         self.btn_tl.on_clicked(self.trigger_tl)
         self.btn_clr.on_clicked(self.trigger_clear)
         
-        # Optional: Add formatting to buttons
+        # Style buttons
         for b in [self.btn_set, self.btn_tl, self.btn_clr]:
             b.label.set_color('white')
             b.label.set_weight('bold')
 
-        # Connect them to the class methods
-        self.btn_set.on_clicked(self.trigger_set)
-        self.btn_tl.on_clicked(self.trigger_tl)
-        self.btn_clr.on_clicked(self.trigger_clear)
+        # Create the exhaustion label on the main chart
+        self.set_label = self.ax.text(0.02, 0.91, "SET: 0", transform=self.ax.transAxes, 
+                                     color='#FFFF00', fontweight='bold', fontsize=11)
 
-        # 3. Finalize Window handle
         plt.show(block=False)
         plt.pause(0.5)
 
@@ -268,18 +286,21 @@ class Visualizer:
             print(f"Error sending command: {e}")
 
     # Inside your Visualizer class, usually in the function passed to FuncAnimation
-    def update_chart(self, df_input, current_price, is_connected):
-        # 1. Get latest data from the bridge
-        sync_data = self.bridge.get_sync_data() 
-        
-        # 2. Extract the values we need
-        current_set = sync_data.get('set_count', 0)
-        current_trend = "BULLISH" if self.price_up else "BEARISH"
 
-        # 3. CALL THE UPDATE HERE
-        self.update_dashboard_labels(current_set, current_trend)
+    def update_chart(self, df_input, current_price, is_connected):
+        # 1. Get latest sync data from MT5 (Sets and Trendlines)
+        sync_data = self.bridge.get_sync_data() 
+        current_set = sync_data.get('set_count', 0)
         
-        # ... rest of your candle plotting logic ...
+        # 2. Calculate the Trend for the Dashboard
+        # We check if price is above the 20-period SMA
+        current_trend = "SYNCING..."
+        if df_input is not None and not df_input.empty and current_price is not None:
+            sma = df_input['close'].rolling(window=20).mean().iloc[-1]
+            current_trend = "BULLISH 📈" if current_price > sma else "BEARISH 📉"
+        
+        # 3. Update labels and terminal awareness
+        self.update_dashboard_labels(current_set, current_trend)
 
         # 1. Prepare DatetimeIndex
         if not isinstance(df_input.index, pd.DatetimeIndex):
@@ -388,44 +409,38 @@ class Visualizer:
 
 # --- MAIN ENGINE ---
 def main():
-
-    # --- MAIN EXECUTION ---
-    # 1. Initialize the Bridge first
-    my_bridge = MT5Bridge(path=mt5_path) 
-
-    # 2. Pass 'my_bridge' into the Visualizer
-    # This is where the "connection" happens
-    viz = Visualizer(bridge=my_bridge, target_symbol="BTCUSD") 
-
-    # 3. Start the loop
-    viz.run_loop()
-
     # 1. INITIALIZE CONFIG AND CORE MODULES
     config = ConfigLoader.load()
-    cmd = CommandCenter(config)
+    mt5_path = config["mt5_path"]
     
+    # Initialize the bridge using the correct class name from your code
     bridge = TradingBridge(config) 
     heartbeat = Heartbeat(config)
-    
-    # Logic Modules
     strategy = StrategyModule(config)
+    cmd = CommandCenter(config)
     
     print("\n>>> MASTER SYSTEM INITIALIZING...")
     print(f">>> TARGET SYMBOL: {config['active_symbol']}")
+    print(f">>> MT5 PATH: {mt5_path}")
 
     # 2. WAIT FOR INITIAL DATA SYNC
-    # Ensure MT5 has at least written the first price file
-    while not os.path.exists(bridge.price_path):
+    # Prevents the visualizer from starting before MT5 writes the first files
+    timeout = 0
+    while not os.path.exists(bridge.price_path) and timeout < 20:
         time.sleep(0.5)
-        sys.stdout.write("\r>>> SYNCING WITH MT5 FILES...")
+        sys.stdout.write(f"\r>>> SYNCING WITH MT5 FILES ({timeout}/20)...")
         sys.stdout.flush()
+        timeout += 1
     
+    if not os.path.exists(bridge.price_path):
+        print("\nCRITICAL: MT5 price file not found. Ensure EA 'test2' is running in MT5.")
+        sys.exit(1)
+
     # 3. INITIALIZE VISUALIZER
-    price_init, tf_init = bridge.get_price_and_tf()
-    # Now this matches the __init__ arguments exactly
-    viz = Visualizer(config, tf_init, config["logic_settings"]["sma_period"], cmd)
+    # We pass 'bridge' so the Visualizer can call bridge.get_sync_data()
+    viz = Visualizer(bridge=bridge, target_symbol=config["active_symbol"])
     
-    # Give the OS (especially macOS) a moment to register the window handle
+    # Allow macOS to render the window frame
     plt.show(block=False)
     plt.pause(1.0) 
 
@@ -433,51 +448,57 @@ def main():
 
     # 4. MAIN OPERATIONAL LOOP
     try:
-        # Check if the figure window is still open
+        # Loop runs as long as the Matplotlib window is open
         while plt.fignum_exists(viz.fig.number):
-            # Maintain the connection pulse
+            # A. Connection Pulse
             heartbeat.pulse()
             connected = bridge.is_connected()
 
-            # GET LIVE DATA
+            # B. Get Live Data
             price, current_tf = bridge.get_price_and_tf()
             current_tf = current_tf.replace("PERIOD_", "")
-            # -------------------------
-            # HANDLE TIMEFRAME SWITCHING
+
+            # C. Handle Timeframe Switching
             if viz.timeframe != current_tf:
                 print(f"\n>>> SWITCHING CHART TO: {current_tf}")
                 viz.timeframe = current_tf
-                viz.last_chart_update = 0 
-                df = None 
+                df = None # Force history reload for new TF
 
-            # REFRESH DATA FRAME
+            # D. Refresh Data Frame (Candles)
             if bridge.has_new_data() or df is None:
                 new_df = bridge.get_history_df()
                 if new_df is not None:
                     df = new_df
 
-            # RENDER CHART AND STATS
+            # E. Render Chart and AI Sync
             if df is not None:
                 live_price = price if connected else None
                 
-                # This calls your updated update_chart with Set/Trendline sync
+                # Update the dashboard (Exhaustion Sets, Trendlines, Candles)
                 viz.update_chart(df, live_price, connected)
                 
-                # CALCULATE TREND & PRINT STATUS
+                # F. Calculate Strategy Trend
                 trend = strategy.calculate_trend(live_price, df) if live_price else "OFFLINE"
                 
+                # G. ROBUST TERMINAL OUTPUT (The Fix for the 'f' error)
+                if isinstance(live_price, (int, float)):
+                    price_str = f"{live_price:<10.2f}"
+                else:
+                    price_str = "---       "
+
                 sys.stdout.write(
-                    f"\r[{current_tf}] PRICE: {live_price if live_price else '---':<10} | "
+                    f"\r[{current_tf}] PRICE: {price_str} | "
                     f"TREND: {trend:<12} | SYNC: {'OK' if connected else 'ERR'}"
                 )
                 sys.stdout.flush()
 
-            # The pulse of the GUI. Essential for responsiveness.
+            # H. Maintain GUI Thread
             plt.pause(0.05) 
 
     except Exception as e:
         print(f"\n>>> SYSTEM ERROR: {e}")
-        # Optional: import traceback; traceback.print_exc() 
+        import traceback
+        traceback.print_exc() 
     finally:
         print("\n>>> System Offline. Goodbye.")
         plt.close('all')
