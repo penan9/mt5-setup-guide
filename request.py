@@ -154,7 +154,12 @@ class StrategyModule:
 
 # --- VISUALIZER ---
 class Visualizer:
-    def __init__(self, config, tf="M5", sma_period=20, cmd=None):
+    def __init__(self, bridge, target_symbol):
+        # This creates the 'bridge' attribute that was missing
+        self.bridge = bridge 
+        self.active_symbol = target_symbol
+        self.last_printed_set = -1
+
         # 1. Basic Setup
         self.mt5_path = config["mt5_path"]
         self.active_symbol = config["active_symbol"]
@@ -204,9 +209,11 @@ class Visualizer:
     def _send_cmd(self, action):
         cmd_path = os.path.join(self.mt5_path, f"{self.active_symbol}_cmd.csv")
         try:
-            # Use 'w' to overwrite the old command immediately
-            with open(cmd_path, "w") as f:
-                f.write(f"{action}") # Just the action: DRAW_TL or SET_INC
+            # Use utf-8 to ensure no extra spaces/nulls are added
+
+            with open(cmd_path, "w", encoding='utf-8') as f:
+                f.write(action)
+
             print(f">>> SIGNAL SENT: {action}")
         except Exception as e:
             print(f"Command Error: {e}")
@@ -230,6 +237,28 @@ class Visualizer:
                            ha='center', va='center', color='white', 
                            fontsize=12, fontweight='bold', bbox=dict(facecolor='#161b22', alpha=0.8))
     
+    def update_dashboard_labels(self, set_count, trend_direction):
+        """Updates the on-chart text indicators based on MT5 Sync data."""
+        try:
+            # Update the Exhaustion text
+            self.set_label.set_text(f"SET: {set_count}")
+            
+            # Logic for terminal awareness
+            if hasattr(self, 'last_printed_set') and self.last_printed_set != set_count:
+                print(f">>> [AI ENGINE] MT5 Exhaustion updated to: {set_count}")
+                self.last_printed_set = set_count
+
+            # Visual indicator for "High Exhaustion"
+            if set_count >= 7:
+                self.set_label.set_color('#FF4444') # Bright Red
+                self.set_label.set_weight('bold')
+            else:
+                self.set_label.set_color('#00FF00') # Neon Green
+                self.set_label.set_weight('normal')
+
+        except Exception as e:
+            print(f"Dashboard Update Error: {e}")
+ 
     def send_mt5_cmd(self, action):
         cmd_file = os.path.join(self.mt5_path, f"{self.active_symbol}_cmd.csv")
         try:
@@ -238,7 +267,20 @@ class Visualizer:
         except Exception as e:
             print(f"Error sending command: {e}")
 
+    # Inside your Visualizer class, usually in the function passed to FuncAnimation
     def update_chart(self, df_input, current_price, is_connected):
+        # 1. Get latest data from the bridge
+        sync_data = self.bridge.get_sync_data() 
+        
+        # 2. Extract the values we need
+        current_set = sync_data.get('set_count', 0)
+        current_trend = "BULLISH" if self.price_up else "BEARISH"
+
+        # 3. CALL THE UPDATE HERE
+        self.update_dashboard_labels(current_set, current_trend)
+        
+        # ... rest of your candle plotting logic ...
+
         # 1. Prepare DatetimeIndex
         if not isinstance(df_input.index, pd.DatetimeIndex):
             df_input.index = pd.to_datetime(df_input.index)
@@ -278,11 +320,17 @@ class Visualizer:
                 for _, row in sync_data.iterrows():
                     if row[0] == "SET":
                         set_count_text = f"EXHAUSTION: SET {row[1]}"
+
+                        # Inside your sync file processing loop
                     elif row[0] == "TL" and len(row) >= 6:
                         t1 = pd.to_datetime(int(row[2]), unit='s')
-                        p1, t2 = float(row[3]), pd.to_datetime(int(row[4]), unit='s')
-                        p2 = float(row[5])
+                        p1 = float(row[3])
+                        t2 = pd.to_datetime(int(row[4]), unit='s')
+                        p2 = float(row[5])                      
+                        # NEW: AI awareness printout
+                        print(f">>> AI RECEIVED MT5 TRENDLINE: Start({t1}, {p1}) End({t2}, {p2})")                     
                         trendlines.append([(t1, p1), (t2, p2)])
+
             except: pass 
 
         # --- CREATE BRIGHT NEON STYLE ---
@@ -340,6 +388,18 @@ class Visualizer:
 
 # --- MAIN ENGINE ---
 def main():
+
+    # --- MAIN EXECUTION ---
+    # 1. Initialize the Bridge first
+    my_bridge = MT5Bridge(path=mt5_path) 
+
+    # 2. Pass 'my_bridge' into the Visualizer
+    # This is where the "connection" happens
+    viz = Visualizer(bridge=my_bridge, target_symbol="BTCUSD") 
+
+    # 3. Start the loop
+    viz.run_loop()
+
     # 1. INITIALIZE CONFIG AND CORE MODULES
     config = ConfigLoader.load()
     cmd = CommandCenter(config)
