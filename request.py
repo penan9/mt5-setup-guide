@@ -141,18 +141,29 @@ class TradingBridge:
     def get_history_df(self):
         try:
             if os.path.exists(self.hist_path):
-                # FIXED: Added sep='\t' to handle the MT5 Tab format
+                # 1. Read the file (MT5 uses Tabs)
                 df = pd.read_csv(self.hist_path, sep='\t')
                 
-                # Cleanup headers
+                # 2. Clean headers to lowercase
                 df.columns = [c.strip().lower() for c in df.columns]
                 
-                if 'close' in df.columns:
-                    df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                    return df
-                else:
-                    # This will now show the individual columns if it still fails
-                    print(f"\n>>> DEBUG HEADERS: {list(df.columns)}")
+                # 3. CONVERT TIME TO DATETIME INDEX (The Fix)
+                if 'time' in df.columns:
+                    # Convert Unix seconds to real dates
+                    df['time'] = pd.to_datetime(df['time'], unit='s')
+                    # Set it as the index so mplfinance can see it
+                    df.set_index('time', inplace=True)
+                
+                # 4. Ensure price columns are numbers
+                cols_to_fix = ['open', 'high', 'low', 'close']
+                for col in cols_to_fix:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                # Drop any rows that failed to convert
+                df.dropna(subset=['close'], inplace=True)
+                
+                return df
             return None
         except Exception as e:
             print(f"Read Error: {e}")
@@ -243,17 +254,21 @@ class Visualizer:
         self._send_cmd("CLEAR")
 
     def update_dashboard_ui(self, online, tf, price):
-        """Update the top status text without clearing the whole chart"""
-        self.ax_status.clear()
-        self.ax_status.set_axis_off()
-        status_color = '#00FF00' if online else '#FF3131'
-        status_text = "● ONLINE" if online else "○ OFFLINE"
-        
-        # Draw the Dashboard Info
-        info = f"{status_text}  |  SYMBOL: {self.active_symbol}  |  TF: {tf}  |  LIVE: {price:.2f}"
-        self.ax_status.text(0.5, 0.5, info, transform=self.ax_status.transAxes,
-                           ha='center', va='center', color='white', 
-                           fontsize=12, fontweight='bold', bbox=dict(facecolor='#161b22', alpha=0.8))
+            """Update the top status text without clearing the whole chart"""
+            self.ax_status.clear()
+            self.ax_status.set_axis_off()
+            
+            status_color = '#00FF00' if online else '#FF3131'
+            status_text = "● MT5 ONLINE" if online else "○ MT5 OFFLINE"
+            display_price = f"{price:.2f}" if isinstance(price, (int, float)) else "---"
+            
+            # Draw the Dashboard Info Box
+            info = f"{status_text}  |  TF: {tf}  |  {self.active_symbol}: {display_price}"
+            
+            self.ax_status.text(0.5, 0.5, info, transform=self.ax_status.transAxes,
+                            ha='center', va='center', color='white', 
+                            fontsize=11, fontweight='bold', 
+                            bbox=dict(facecolor='#161b22', alpha=0.9, edgecolor=status_color))
     
     def update_dashboard_labels(self, set_count, trend_direction):
         """Updates the on-chart text indicators based on MT5 Sync data."""
@@ -267,12 +282,17 @@ class Visualizer:
                 self.last_printed_set = set_count
 
             # Visual indicator for "High Exhaustion"
-            if set_count >= 7:
-                self.set_label.set_color('#FF4444') # Bright Red
-                self.set_label.set_weight('bold')
-            else:
-                self.set_label.set_color('#00FF00') # Neon Green
-                self.set_label.set_weight('normal')
+            try:
+                # Check if set_label exists before trying to color it
+                if hasattr(self, 'set_label'):
+                    if set_count >= 7:
+                        self.set_label.set_color('#FF3131') # Red for alert
+                        self.set_label.set_weight('bold')
+                    else:
+                        self.set_label.set_color('#00FF00') # Green for safe
+                        self.set_label.set_weight('normal')
+            except:
+                pass
 
         except Exception as e:
             print(f"Dashboard Update Error: {e}")
@@ -288,124 +308,72 @@ class Visualizer:
     # Inside your Visualizer class, usually in the function passed to FuncAnimation
 
     def update_chart(self, df_input, current_price, is_connected):
-        # 1. Get latest sync data from MT5 (Sets and Trendlines)
-        sync_data = self.bridge.get_sync_data() 
-        current_set = sync_data.get('set_count', 0)
-        
-        # 2. Calculate the Trend for the Dashboard
-        # We check if price is above the 20-period SMA
-        current_trend = "SYNCING..."
-        if df_input is not None and not df_input.empty and current_price is not None:
-            sma = df_input['close'].rolling(window=20).mean().iloc[-1]
-            current_trend = "BULLISH 📈" if current_price > sma else "BEARISH 📉"
-        
-        # 3. Update labels and terminal awareness
-        self.update_dashboard_labels(current_set, current_trend)
-
-        # 1. Prepare DatetimeIndex
-        if not isinstance(df_input.index, pd.DatetimeIndex):
-            df_input.index = pd.to_datetime(df_input.index)
-
+        # 1. Clear Axis & Setup Background (DO THIS ONCE)
         self.ax.clear()
+        self.ax_status.clear()
+        self.ax.set_facecolor('#0d1117')
+        self.ax_status.set_axis_off()
         
+        # 2. DATA VALIDATION
         if df_input is None or df_input.empty:
             self.ax.text(0.5, 0.5, "AWAITING MARKET DATA...", transform=self.ax.transAxes, 
                          ha='center', va='center', color='white')
             self.fig.canvas.draw()
-            return
+            return 
 
-        # --- SYNC DATA FROM MT5 (Sets and Trendlines) ---
-        sync_file = os.path.join(self.mt5_path, f"{self.active_symbol}_sync.csv")
-        trendlines = []
-        set_count_text = "SET: 0"
+        # 3. SYNC DATA FROM MT5 (Sets and Trendlines)
+        sync_data = self.bridge.get_sync_data() 
+        current_set = sync_data.get('set_count', 0)
+        mt5_trendlines = sync_data.get('trendlines', [])
         display_price = f"{current_price:.2f}" if current_price is not None else "---"
 
-        # --- UPDATE TOP STATUS BAR ---
-        self.ax_status.clear()
-        self.ax_status.set_axis_off()
-
+        # 4. UPDATE TOP DASHBOARD STATUS BAR
         status_color = '#00FF00' if is_connected else '#FF3131'
         status_text = "● MT5 ONLINE" if is_connected else "○ MT5 OFFLINE"
-        
-        # New Dashboard Text with safety check
         info = f"{status_text}  |  TF: {self.timeframe}  |  {self.active_symbol}: {display_price}"
         
         self.ax_status.text(0.5, 0.5, info, transform=self.ax_status.transAxes,
                            ha='center', va='center', color='white', 
                            fontsize=11, fontweight='bold', 
                            bbox=dict(facecolor='#161b22', alpha=0.9, edgecolor=status_color))
-        
-        if os.path.exists(sync_file):
-            try:
-                sync_data = pd.read_csv(sync_file, header=None)
-                for _, row in sync_data.iterrows():
-                    if row[0] == "SET":
-                        set_count_text = f"EXHAUSTION: SET {row[1]}"
 
-                        # Inside your sync file processing loop
-                    elif row[0] == "TL" and len(row) >= 6:
-                        t1 = pd.to_datetime(int(row[2]), unit='s')
-                        p1 = float(row[3])
-                        t2 = pd.to_datetime(int(row[4]), unit='s')
-                        p2 = float(row[5])                      
-                        # NEW: AI awareness printout
-                        print(f">>> AI RECEIVED MT5 TRENDLINE: Start({t1}, {p1}) End({t2}, {p2})")                     
-                        trendlines.append([(t1, p1), (t2, p2)])
+        # 5. PREPARE PLOT STYLE (Neon Green/Red)
+        mc = mpf.make_marketcolors(up='#00FF00', down='#FF3131', edge='inherit', wick='inherit')
+        bright_style = mpf.make_mpf_style(marketcolors=mc, base_mpf_style='charles', gridcolor='#1f2937')
 
-            except: pass 
-
-        # --- CREATE BRIGHT NEON STYLE ---
-        # Up: Lime Green (#00FF00), Down: Bright Neon Red (#FF3131)
-        mc = mpf.make_marketcolors(
-            up='#00FF00', 
-            down='#FF3131', 
-            edge='inherit', 
-            wick='inherit', 
-            volume='inherit'
-        )
-        
-        # Creating a custom style that works specifically with your dark background
-        bright_style = mpf.make_mpf_style(
-            marketcolors=mc, 
-            base_mpf_style='charles', 
-            gridcolor='#1f2937' # Subtle dark grid
-        )
-
-        # --- DYNAMIC PLOTTING ARGUMENTS ---
         plot_kwargs = {
             'type': 'candle',
             'ax': self.ax,
-            'style': bright_style, # Using the new bright style
-            'update_width_config': dict(candle_linewidth=0.8) # Slightly thicker for visibility
+            'style': bright_style,
+            'update_width_config': dict(candle_linewidth=0.8)
         }
         
-        if trendlines:
-            # Using Cyan for trendlines to contrast with the Neon Red/Green
-            plot_kwargs['alines'] = dict(alines=trendlines, colors='#00FFFF', linewidths=1.5, alpha=0.8)
+        if mt5_trendlines:
+            plot_kwargs['alines'] = dict(alines=mt5_trendlines, colors='#00FFFF', linewidths=1.5, alpha=0.8)
 
-        # --- RENDER ---
+        # 6. RENDER CHART AND OVERLAYS
         try:
             mpf.plot(df_input, **plot_kwargs)
 
-            # UI Overlays
-            status_color = '#00FF00' if is_connected else '#FF3131'
-            self.ax.text(0.02, 0.96, f"{'● ONLINE' if is_connected else '○ OFFLINE'}", 
-                         transform=self.ax.transAxes, color=status_color, fontweight='bold', fontsize=10)
+            # TOP LEFT: Online Status (High)
+            self.ax.text(0.02, 0.96, status_text, transform=self.ax.transAxes, 
+                         color=status_color, fontweight='bold', fontsize=9)
             
-            # Bright Yellow for your "Set" indicator
-            self.ax.text(0.02, 0.91, set_count_text, transform=self.ax.transAxes, 
-                         color='#FFFF00', fontweight='bold', fontsize=11)
+            # TOP LEFT: Exhaustion Indicator (Lower - avoids overlap)
+            # Added a bbox (background box) to ensure readability against candles
+            self.ax.text(0.02, 0.88, f"EXHAUSTION: SET {current_set}", 
+                         transform=self.ax.transAxes, color='#FFFF00', 
+                         fontweight='bold', fontsize=11,
+                         bbox=dict(facecolor='#0d1117', alpha=0.7, edgecolor='none'))
             
+            # TOP RIGHT: Live Price
             if current_price:
-                # White Gold text in the top right
                 self.ax.set_title(f"LIVE: {display_price}", color='white', loc='right', fontsize=10)
 
         except Exception as e:
             print(f"\n[Plot Error] {e}")
 
-        # Ensure background is consistently dark
-        self.ax.set_facecolor('#0d1117')
-        self.fig.canvas.draw()
+        self.fig.canvas.draw_idle()
 
 # --- MAIN ENGINE ---
 def main():
