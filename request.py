@@ -19,6 +19,7 @@ matplotlib.use('TkAgg')
 
 import pandas as pd
 from xgboost import XGBClassifier
+version = 1.01
 
 # --- ADD THIS TO YOUR PYTHON AI ENGINE ---
 def calculate_entry_confidence(df, current_set):
@@ -103,7 +104,7 @@ class Heartbeat:
     def __init__(self, config):
         # This path must point EXACTLY to your MT5 'Files' folder
         self.path = os.path.join(config["mt5_path"], "python_heartbeat.txt")
-        print("Link with MT5 - test2 version 1.1")
+        print("Link with MT5 - test2 version: ", version)
 
     def pulse(self):
         try:
