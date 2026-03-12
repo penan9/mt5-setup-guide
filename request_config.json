@@ -1,7 +1,7 @@
 {
     "mt5_path": "/Users/alex/Library/Application Support/net.metaquotes.wine.metatrader5/drive_c/Program Files/MetaTrader 5/MQL5/Files",
-    "active_symbol": "BTCUSD",
-    "active_symbol0": "XAUUSD",
+    "active_symbol1": "BTCUSD",
+    "active_symbol": "XAUUSD",
     "history_bars": 100,
     "refresh_rate": 0.5,
     "logic_settings": {
