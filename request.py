@@ -9,15 +9,12 @@ import mplfinance as mpf
 import matplotlib
 from matplotlib.widgets import Button
 import warnings
-matplotlib.use('TkAgg') # Or 'MacOSX'
 import matplotlib.pyplot as plt
 
+# macOS Stability Settings
+matplotlib.use('TkAgg')
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# macOS Stability Backend
-matplotlib.use('TkAgg') 
-
-import pandas as pd
 from xgboost import XGBClassifier
 version = 1.01
 
@@ -83,6 +80,28 @@ class CommandCenter:
         self.trading_enabled = False
         self.state_start_time = datetime.now()
         self.analysis_mode = "SMA"
+        self.heartbeat_file = os.path.join(self.mt5_path, "mt5_heartbeat.txt")
+
+    def monitor_connection(self):
+        # Check if MT5 has updated its heartbeat in the last 10 seconds
+        if os.path.exists(self.heartbeat_file):
+            last_mod = os.path.getmtime(self.heartbeat_file)
+            if (time.time() - last_mod) < 10:
+                return True # MT5 is Running
+        return False
+
+    def run_loop(self):
+        while True:
+            if self.monitor_connection():
+                ai_status = "active"
+                ai_color = "lime"
+            else:
+                ai_status = "waiting_for_mt5"
+                ai_color = "orange"
+            
+            # Now update your visuals and the bridge file
+            self.update_status_visuals(ai_status, ai_color)
+            time.sleep(1)
 
     def toggle_trading(self):
         self.trading_enabled = not self.trading_enabled
@@ -132,11 +151,19 @@ class TradingBridge:
 
     def is_connected(self):
         try:
-            if not os.path.exists(self.price_path):
-                return (time.time() - self._start_time) < 5
-            mtime = os.path.getmtime(self.price_path)
-            return (time.time() - mtime) < 30
-        except: return False
+            # 1. Check for the Heartbeat file
+            # If it's missing, we are definitely NOT connected.
+            if not os.path.exists(self.heartbeat_file): 
+                return False
+            
+            # 2. Check if the heartbeat is stale (e.g., > 3 seconds)
+            mtime = os.path.getmtime(self.heartbeat_file)
+            if (time.time() - mtime) > 3:
+                return False
+                
+            return True
+        except: 
+            return False
 
     def has_new_data(self):
         try:
@@ -229,6 +256,30 @@ class TradingBridge:
             pass # Keep moving if file is temporarily busy
             
         return data
+
+    def read_mt5_file(self, filename):
+        """
+        Reads the content of a file from the MT5 path defined in config.
+        --- Usage Example ---
+        bridge = TradingBridge(config)
+        data = bridge.read_mt5_file("ai_score.txt")
+        config["mt5_path"] = "C:/Users/CheeWooi/AppData/Roaming/MetaQuotes/Terminal/Common/Files"
+        """
+        # Join the base path with the filename safely
+        full_path = os.path.join(self.mt5_path, filename)
+        
+        try:
+            # Using 'encoding="utf-16"' if MT5 used FILE_UNICODE, 
+            # or 'utf-8'/'ansi' if MT5 used FILE_ANSI
+            with open(full_path, 'r', encoding='utf-8') as file:
+                content = file.read().strip()
+                return content
+        except FileNotFoundError:
+            print(f"Error: {filename} not found at {full_path}")
+            return None
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
     
 # --- STRATEGY ---
 class StrategyModule:
@@ -267,19 +318,30 @@ class Visualizer:
         self.active_symbol = target_symbol
         self.current_tl_type = 1
         self.timeframe = self.bridge.current_tf
-        self._need_redraw = True # Optimization flag
-
-        # Setup Figure with dark theme
+        self._need_redraw = True 
+        
+        # --- ADD/FIXED ---
+        # 1. Ensure the Figure background is dark to prevent light flashes
         self.fig = plt.figure(figsize=(12, 8), facecolor='#0d1117')
+        
+        # 2. Main chart area
         self.ax = self.fig.add_axes([0.1, 0.15, 0.85, 0.7])
+        
+        # 3. Status area (The "White Box" culprit)
         self.ax_status = self.fig.add_axes([0.1, 0.88, 0.8, 0.08])
+        
+        # ADD THESE TO PERMANENTLY KILL THE BORDER/BACKGROUND
+        self.ax_status.set_axis_off() 
+        self.ax_status.set_facecolor('#0d1117')
+        # This forces the figure to acknowledge the dark background
+        self.fig.patch.set_facecolor('#0d1117') 
         
         # Button construction (Abstracted for brevity)
         self._setup_buttons()
         
         # Indicators
-        self.set_label = self.ax.text(0.02, 0.91, "SET: 0", transform=self.ax.transAxes, 
-                                     color='#FFFF00', fontweight='bold', zorder=5)
+        self.set_label = self.ax.text(0.02, 0.91, "SET:1 0", transform=self.ax.transAxes, 
+                                    color='#FFFF00', fontweight='bold', zorder=5)
     def _setup_buttons(self):
         # Existing SET button
         self.ax_set = self.fig.add_axes([0.15, 0.04, 0.15, 0.06])
@@ -351,27 +413,26 @@ class Visualizer:
         self.fig.canvas.draw_idle()
 
     def update_dashboard_ui(self, online, tf, price):
-            """Update the top status text without clearing the whole chart"""
-            self.ax_status.clear()
-            self.ax_status.set_axis_off()
-            
-            status_color = '#00FF00' if online else '#FF3131'
-            status_text = "● MT5 ONLINE" if online else "○ MT5 OFFLINE"
-            display_price = f"{price:.2f}" if isinstance(price, (int, float)) else "---"
-            
-            # Draw the Dashboard Info Box
-            info = f"{status_text}  |  TF: {tf}  |  {self.active_symbol}: {display_price}"
-            
-            self.ax_status.text(0.5, 0.5, info, transform=self.ax_status.transAxes,
-                            ha='center', va='center', color='white', 
-                            fontsize=11, fontweight='bold', 
-                            bbox=dict(facecolor='#161b22', alpha=0.9, edgecolor=status_color))
+        self.ax_status.clear()
+        self.ax_status.set_axis_off()          # <--- Hides the white borders
+        self.ax_status.set_facecolor('#0d1117') # <--- Matches your dark theme
+        status_color = '#00FF00' if online else '#FF3131'
+        status_text = "● MT5 ONLINE" if online else "○ MT5 OFFLINE"
+        display_price = f"{price:.2f}" if isinstance(price, (int, float)) else "---"
+        
+        # Draw the Dashboard Info Box
+        info = f"{status_text}  |  TF: {tf}  |  {self.active_symbol}: {display_price}"
+        
+        self.ax_status.text(0.5, 0.5, info, transform=self.ax_status.transAxes,
+                        ha='center', va='center', color='white', 
+                        fontsize=11, fontweight='bold', 
+                        bbox=dict(facecolor='#161b22', alpha=0.9, edgecolor=status_color))
     
     def update_dashboard_labels(self, set_count, trend_direction):
         """Updates the on-chart text indicators based on MT5 Sync data."""
         try:
             # Update the Exhaustion text
-            self.set_label.set_text(f"SET: {set_count}")
+            self.set_label.set_text(f"SET:2 {set_count}")
             
             # Logic for terminal awareness
             if hasattr(self, 'last_printed_set') and self.last_printed_set != set_count:
@@ -470,33 +531,26 @@ class Visualizer:
         
         # Determine Color for Set Count
         set_color = "yellow" if set_count < 7 else "#FF0000" # Red if 7
-        
-        # Example position for Set Count
-        self.ax.text(0.5, 0.95, f"SET: {set_count}", color=set_color, 
-                     transform=self.ax.transAxes, fontweight='bold', ha='center',
-                     bbox=dict(facecolor='black', alpha=0.5))
 
         # Define Colors
         conn_color = "#00FF00" if is_connected else "#FF3131"
         status_color = "#00FF00" if ai_status == "Active" else "#FFA500" # Green vs Orange
         
         # 1. Top Left: AI Status & TF Display
-        # This uses the 'tf' variable we just passed from the bridge
         self.ax.text(0.02, 0.95, f"AI: {ai_status} | {tf}", transform=self.ax.transAxes, 
-                     color=status_color, fontsize=10, fontweight='bold', verticalalignment='top')
+                    color=status_color, fontsize=10, fontweight='bold', va='top')
 
         # 2. Top Right: Connection & Set Count
         self.ax.text(0.98, 0.95, f"SET: {set_count} | {'CONNECTED' if is_connected else 'DISCONNECTED'}", 
-                     transform=self.ax.transAxes, color=conn_color, fontsize=9, 
-                     horizontalalignment='right', verticalalignment='top')
+                    transform=self.ax.transAxes, color=conn_color, fontsize=9, 
+                    ha='right', va='top')
 
         # 3. Center Right: Large Price Display
-        # In _update_overlay, find the Large Price Display section:
         display_text = f"{price:.2f}" if (price and price > 0) else "WAITING..."
         
         self.ax.text(0.98, 0.85, display_text, transform=self.ax.transAxes,
-                     color='#FFFFFF', fontsize=20, fontweight='bold',
-                     horizontalalignment='right', alpha=0.8)
+                    color='#FFFFFF', fontsize=20, fontweight='bold',
+                    ha='right', alpha=0.8)
         
 def get_ai_confirmation(df):
     # Calculate ATR (Volatility)
@@ -563,121 +617,86 @@ def initialize_ai(mt5_path):
 # 1. DEFINE THE AI TRAINER (Move logic into a function)
 def train_ai_model(mt5_path):
     history_file = os.path.join(mt5_path, 'MT5_Set_History.csv')
-    
-    # --- AUTO-SEED LOGIC: Create history if missing so AI can start ---
     if not os.path.exists(history_file) or os.path.getsize(history_file) < 10:
-        with open(history_file, 'w') as f:
-            f.write("set_magnitude,bars_duration,hour_of_day,dist_from_be,success_label\n")
-            f.write("7,10,12,0.5,1\n") # Fake Win
-            f.write("3,5,14,0.1,0\n")  # Fake Loss
-        print(">>> AI Engine: Seeded initial memory.")
-
+        return None
     try:
         with open(history_file, 'rb') as f:
             content = f.read().replace(b'\x00', b'').decode('utf-8', errors='ignore')
-        
-        from io import StringIO
         data = pd.read_csv(StringIO(content))
-        
-        # Define the exact features your MT5 sends
         features = ['set_magnitude', 'bars_duration', 'hour_of_day', 'dist_from_be']
-        
-        # Convert and Train
         for col in features + ['success_label']:
             data[col] = pd.to_numeric(data[col], errors='coerce')
-        
         data = data.dropna()
-
         if len(data) >= 2:
-            X = data[features]
-            y = data['success_label']
             model = XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.1)
-            model.fit(X, y)
-            print(">>> AI Engine: ACTIVE")
+            model.fit(data[features], data['success_label'])
             return model
-    except Exception as e:
-        print(f">>> AI Training Error: {e}")
+    except: pass
     return None
+
+def calculate_exhaustion_levels(df):
+    return 0, "NEUTRAL"
 
 def main():
     config = ConfigLoader.load()
-    
-    # IMPROVED: Dynamic Debug Message
-    symbol = config.get('active_symbol', 'XAUUSD')
     mt5_path = config.get('mt5_path', '')
+    symbol = config.get('active_symbol', 'XAUUSD')
     
-    # This now reflects the actual folder being watched
-    print(f"DEBUG: Monitoring MT5 Path: {mt5_path}")
-    print(f"DEBUG: Active Symbol: {symbol}")
-    
-    # Initialize Bridge and Visualizer
     bridge = TradingBridge(config)
     viz = Visualizer(bridge, symbol)
-    
-    # 1. TRAIN AI (Using your modular function)
     ai_model = train_ai_model(mt5_path)
-
     heartbeat = Heartbeat(config)
     
     plt.show(block=False)
-
+    
     try:
         while plt.fignum_exists(viz.fig.number):
             heartbeat.pulse()
+            
+            # 1. Gather System State
             connected = bridge.is_connected()
             sync_data = bridge.get_sync_data()
-
-            # --- FIX: GET PRICE AND TF SAFELY ---
-            raw_price, tf = bridge.get_price_and_tf()
-            
-            # If bridge returns None, use a fallback so the dashboard doesn't crash
-            price = raw_price if raw_price is not None else 0.0
-            
-            # --- 1. GET LIVE TF AND PRICE ---
             price, tf = bridge.get_price_and_tf()
+            df = bridge.get_history_df()
             
-            # --- 2. DETERMINE AI STATUS ---
-            current_status = "Active" if ai_model is not None else "Learning"
-
-            # --- 3. AI SCORING LOGIC (Safely contained) ---
-            if ai_model is not None and bridge.has_new_data():
+            # 2. Logic Gate for AI Scoring
+            current_status = "Learning"
+            if connected and ai_model is not None and df is not None:
                 try:
-                    df = bridge.get_history_df()
-                    if df is not None:
-                        current_set = sync_data.get('set_count', 0)
-                        
-                        live_data = pd.DataFrame([{
-                            'set_magnitude': float(current_set), 
-                            'bars_duration': float(len(df)),
-                            'hour_of_day': float(datetime.now().hour),
-                            'dist_from_be': 0.0   
-                        }])
-                        
-                        # Prob and direction logic
-                        prob = ai_model.predict_proba(live_data)[0][1] * 100
-                        direction = 1 if current_set > 0 else 0
-                        
-                        score_file = os.path.join(mt5_path, "ai_score.txt")
-                        with open(score_file, 'w') as f:
-                            f.write(f"{prob:.2f},{direction}")
-                except:
+                    current_status = "Active"
+                    current_set = sync_data.get('set_count', 0)
+                    
+                    live_data = pd.DataFrame([{
+                        'set_magnitude': float(current_set), 
+                        'bars_duration': float(len(df)),
+                        'hour_of_day': float(datetime.now().hour),
+                        'dist_from_be': 0.0   
+                    }])
+                    
+                    prob = ai_model.predict_proba(live_data)[0][1] * 100
+                    direction = 1 if current_set > 0 else 0
+                    
+                    score_file = os.path.join(mt5_path, "ai_score.txt")
+                    with open(score_file, 'w') as f:
+                        f.write(f"{prob:.2f},{direction}")
+                except Exception as e:
                     current_status = "AI Error"
+            elif not connected:
+                current_status = "No Active"
+                print(">>> AI ENGINE PAUSED: MT5 Disconnected")
 
-            # --- THE CLEAN CALL ---
-            price, tf = bridge.get_price_and_tf()
-            current_status = "Active" if ai_model is not None else "Learning"
-            
-            # Use explicit keyword arguments for safety
+            # 3. MANDATORY UI UPDATE
+            # Moved OUTSIDE the connection gate so the chart always refreshes
             viz.update_chart(
-                df=bridge.get_history_df(), 
-                price=price, 
+                df=df, 
+                price=price if price is not None else 0.0, 
                 is_connected=connected, 
                 tf=tf, 
                 ai_status=current_status
             )
-            
-            plt.pause(0.1)
 
+            plt.pause(0.1)
+            
     except Exception as e:
         print(f"\n>>> SYSTEM ERROR: {e}")
     finally:
