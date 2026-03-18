@@ -16,6 +16,7 @@ matplotlib.use('TkAgg')
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from xgboost import XGBClassifier
+// to work on ai
 version = 1.03
 
 # --- ADD THIS TO YOUR PYTHON AI ENGINE ---
