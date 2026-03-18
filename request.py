@@ -16,7 +16,7 @@ matplotlib.use('TkAgg')
 warnings.filterwarnings("ignore", category=UserWarning)
 
 from xgboost import XGBClassifier
-version = 1.01
+version = 1.03
 
 # --- ADD THIS TO YOUR PYTHON AI ENGINE ---
 def calculate_entry_confidence(df, current_set):
@@ -598,44 +598,90 @@ def initialize_ai(mt5_path):
     history_file = os.path.join(mt5_path, 'MT5_Set_History.csv')
     if not os.path.exists(history_file):
         print(f"Warning: {history_file} not found. AI score will be disabled.")
-        return None
-    
-    data = pd.read_csv(history_file)
-    features = ['set_magnitude', 'bars_duration', 'hour_of_day', 'rsi_value', 'dist_from_be']
-    
-    # Ensure columns exist before training
-    if all(col in data.columns for col in features):
-        X = data[features]
-        y = data['success_label']
-        model = XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.1)
-        model.fit(X, y)
-        return model
     return None
-
-# ... (Your imports remain the same) ...
 
 # 1. DEFINE THE AI TRAINER (Move logic into a function)
 def train_ai_model(mt5_path):
     history_file = os.path.join(mt5_path, 'MT5_Set_History.csv')
-    if not os.path.exists(history_file) or os.path.getsize(history_file) < 10:
+    
+    # Check 1: Does the file exist?
+    if not os.path.exists(history_file):
+        print(f"DEBUG: File not found at {history_file}")
         return None
+        
+    # Check 2: Is it too small? (Your current check is < 10 bytes)
+    if os.path.getsize(history_file) < 50: # Increased to 50 for safety
+        print("DEBUG: File too small for training")
+        return None
+
     try:
+        # Load and clean
         with open(history_file, 'rb') as f:
             content = f.read().replace(b'\x00', b'').decode('utf-8', errors='ignore')
         data = pd.read_csv(StringIO(content))
+        
+        # Check 3: Do the columns match your code?
         features = ['set_magnitude', 'bars_duration', 'hour_of_day', 'dist_from_be']
-        for col in features + ['success_label']:
-            data[col] = pd.to_numeric(data[col], errors='coerce')
+        if 'success_label' not in data.columns:
+            print(f"DEBUG: 'success_label' column missing. Found: {data.columns.tolist()}")
+            return None
+            
         data = data.dropna()
-        if len(data) >= 2:
-            model = XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.1)
-            model.fit(data[features], data['success_label'])
-            return model
-    except: pass
-    return None
+        if len(data) < 2:
+            print("DEBUG: Not enough valid rows to train")
+            return None
+            
+        model = XGBClassifier(n_estimators=50, max_depth=3, learning_rate=0.1)
+        model.fit(data[features], data['success_label'])
+        return model
+    except Exception as e:
+        print(f"DEBUG: Model training crashed: {e}")
+        return None
 
 def calculate_exhaustion_levels(df):
     return 0, "NEUTRAL"
+
+def check_mt5_ack(mt5_path, max_delay=5):
+    ack_file = os.path.join(mt5_path, "mt5_ack.txt")
+    print("ACK FILE PATH:", ack_file)
+
+    if not os.path.exists(ack_file):
+        return False, "NO FILE"
+
+    try:
+        # --- Check last modified time ---
+        last_mod = os.path.getmtime(ack_file)
+        if time.time() - last_mod > max_delay:
+            return False, "STALE ACK"
+
+        # --- Read content safely ---
+        # *** CHANGE THIS LINE ***
+        with open(ack_file, "r", encoding='utf-16') as f: # <--- Changed encoding
+            content = f.read().strip()
+
+        if not content:
+            return False, "EMPTY ACK"
+
+        # Expected: RECEIVED|timestamp
+        parts = content.split("|")
+
+        if len(parts) < 2:
+            return False, "FORMAT ERROR"
+
+        status = parts[0]
+        ts = int(parts[1])
+
+        # --- Double validation ---
+        if time.time() - ts > max_delay:
+            return False, "STALE ACK - Timestamp"
+
+        if status == "RECEIVED":
+            return True, "CONNECTED"
+        return False, "UNKNOWN STATUS" # Or handle other statuses
+    except Exception as e:
+        # Added more specific error message for debugging
+        print(f"ERROR reading mt5_ack.txt: {e}")
+        return False, "READ ERROR"
 
 def main():
     config = ConfigLoader.load()
@@ -659,8 +705,31 @@ def main():
             price, tf = bridge.get_price_and_tf()
             df = bridge.get_history_df()
             
-            # 2. Logic Gate for AI Scoring
-            current_status = "Learning"
+            ai_model = train_ai_model(mt5_path)
+            
+            ack_ok, ack_status = check_mt5_ack(mt5_path)
+
+            if not ack_ok:
+                print(f">>> MT5 ISSUE: {ack_status}")
+                current_status = "NO ACK"
+            else:
+                current_status = "SYNCED"
+
+            if ack_ok and connected:
+                current_status = "ACTIVE"
+            elif not ack_ok:
+                current_status = "NO ACK"
+            elif not connected:
+                current_status = "MT5 OFFLINE"
+            
+            filename = os.path.join(mt5_path, 'MT5_Set_History.csv')
+            if os.path.exists(filename):
+                print(f"SUCCESS: File found! {filename}")
+            else:
+                print(f"FAILED: File not found! {filename}")
+            
+            score_file = os.path.join(mt5_path, "ai_score.txt")
+                        
             if connected and ai_model is not None and df is not None:
                 try:
                     current_status = "Active"
@@ -675,10 +744,13 @@ def main():
                     
                     prob = ai_model.predict_proba(live_data)[0][1] * 100
                     direction = 1 if current_set > 0 else 0
-                    
-                    score_file = os.path.join(mt5_path, "ai_score.txt")
+                    timestamp = int(time.time())
                     with open(score_file, 'w') as f:
-                        f.write(f"{prob:.2f},{direction}")
+                        f.write(f"{prob:.2f},{direction},{timestamp}")
+
+                    data = bridge.read_mt5_file("ai_score.txt")
+
+                    print("MT5 FILE CONTENT:", data)
                 except Exception as e:
                     current_status = "AI Error"
             elif not connected:
