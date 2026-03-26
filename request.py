@@ -14,6 +14,7 @@ import numpy as np
 import queue # For thread-safe plot updates
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+VERSION = "Working socket 1.0.1"
 
 # --- Configuration ---
 HOST = '127.0.0.1' # Standard loopback interface address (localhost)
