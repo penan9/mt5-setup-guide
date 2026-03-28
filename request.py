@@ -14,7 +14,7 @@ import numpy as np
 import queue # For thread-safe plot updates
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "Working socket 1.0.2 to commit"
+VERSION = "Working socket 1.0.3 to commit with status updated"
 
 # --- Configuration ---
 HOST = '127.0.0.1' # Standard loopback interface address (localhost)
@@ -205,24 +205,49 @@ def parse_mql5_data(data_string):
             return None
 
         # 3. Process the 100 semicolon-separated candles
-        # Each candle looks like "4557.00,4557.54,4556.43,4557.11"
         raw_history = parts[0].strip(';').split(';')
         history_list = []
         
         for candle in raw_history:
             if not candle: continue
-            # Split by COMMA to get the 4 prices
             prices = [float(p) for p in candle.split(',')]
-            # Add 0.0 for volume to keep the 5-column DataFrame structure
             history_list.append(prices + [0.0]) 
 
-        return {
+        # 4. Extract captured features if available (newly added in Step 2)
+        features = {
             'type': 'trade_data',
             'history_list': history_list,
             'symbol': parts[1],
             'timestamp': int(float(parts[2])),
             'set_count': int(float(parts[3]))
         }
+
+        if len(parts) >= 20: # Ensure we have all 16 additional features
+            features.update({
+                'set_magnitude': int(float(parts[4])),
+                'bars_duration': int(float(parts[5])),
+                'dist_from_be': float(parts[6]),
+                'active_TL_option': int(float(parts[7])),
+                'dynamic_TL_slope': float(parts[8]),
+                'dynamic_TL_distance_current_price': float(parts[9]),
+                'channel_top_distance_current_price': float(parts[10]),
+                'channel_bottom_distance_current_price': float(parts[11]),
+                'channel_width': float(parts[12]),
+                'rejection_candle_total_range': float(parts[13]),
+                'rejection_candle_body_size': float(parts[14]),
+                'rejection_candle_upper_wick_size': float(parts[15]),
+                'rejection_candle_lower_wick_size': float(parts[16]),
+                'rejection_candle_is_large_relative_to_average': bool(int(float(parts[17]))),
+                'rejection_candle_volume': float(parts[18]),
+                'bearish_sequence_length': int(float(parts[19]))
+            })
+            # Add calculated ratio
+            if features['rejection_candle_total_range'] > 0:
+                features['rejection_candle_body_to_range_ratio'] = features['rejection_candle_body_size'] / features['rejection_candle_total_range']
+            else:
+                features['rejection_candle_body_to_range_ratio'] = 0.0
+
+        return features
     except Exception as e:
         print(f"Parsing Error: {e}")
         return None
