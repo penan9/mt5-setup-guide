@@ -14,7 +14,7 @@ import numpy as np
 import queue # For thread-safe plot updates
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "Working socket 1.0.3 - Graceful Shutdown 3/4 stage"
+VERSION = "Working socket 1.0.4 - stage 4 with AI triggering"
 
 # --- Configuration ---
 HOST = '127.0.0.1' # Standard loopback interface address (localhost)
