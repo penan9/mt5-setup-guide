@@ -14,7 +14,7 @@ import numpy as np
 import queue # For thread-safe plot updates
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "Working socket 1.0.4 - stage 4 with AI triggering"
+VERSION = "Working socket 1.0.4 with set 7 strategy"
 
 # --- Configuration ---
 HOST = '127.0.0.1' # Standard loopback interface address (localhost)
@@ -45,72 +45,55 @@ class AI_Model:
 
     def predict(self, features):
         """
-        Calculates an AI Score (0.0 to 1.0) and Direction (-1, 0, 1) 
-        based on the features sent from MT5.
+        Hierarchical AI Scoring: HTF Context + LTF Setup (7-Set Rejection)
         """
-        score = 0.5  # Neutral starting point
+        score = 0.5
         direction = 0
         
-        # 1. Evaluate Rejection Candle (Weight: 40%)
+        # 1. HTF Context (H1 & H4) - Acts as a Multiplier/Filter
+        htf_bias = 0
+        htf_bias += features.get('trend_h4', 0) * 0.15
+        htf_bias += features.get('trend_h1', 0) * 0.15
+        htf_bias += features.get('trend_m15', 0) * 0.10
+        
+        # 2. LTF Setup (7-Set Logic)
+        set_count = features.get('set_count', 0)
+        set_factor = 0.0
+        if set_count == 7:
+            set_factor = 0.3  # Huge boost for the target setup
+        elif set_count > 4:
+            set_factor = 0.1
+            
+        # 3. Rejection Quality (at Set-7)
         rejection_factor = 0.0
         if features.get('rejection_candle_total_range', 0) > 0:
-            # High wicks suggest rejection
             upper_wick = features.get('rejection_candle_upper_wick_size', 0)
             lower_wick = features.get('rejection_candle_lower_wick_size', 0)
             total_range = features.get('rejection_candle_total_range', 1)
             
-            # Bearish Rejection (Long upper wick)
+            # Long Upper Wick (Bearish Rejection)
             if upper_wick > (total_range * 0.5):
                 rejection_factor = -0.3
-            # Bullish Rejection (Long lower wick)
+            # Long Lower Wick (Bullish Rejection)
             elif lower_wick > (total_range * 0.5):
                 rejection_factor = 0.3
-                
-        # 2. Evaluate Channel Position (Weight: 30%)
-        channel_factor = 0.0
-        dist_top = features.get('channel_top_distance_current_price', 1)
-        dist_bottom = features.get('channel_bottom_distance_current_price', 1)
-        
-        # Near Top (Potential Sell)
-        if dist_top < (features.get('channel_width', 1) * 0.2):
-            channel_factor = -0.2
-        # Near Bottom (Potential Buy)
-        elif dist_bottom < (features.get('channel_width', 1) * 0.2):
-            channel_factor = 0.2
-            
-        # 3. Trend Alignment (Weight: 30%)
-        trend_factor = 0.0
-        slope = features.get('dynamic_TL_slope', 0)
-        seq_len = features.get('bearish_sequence_length', 0)
-        
-        if slope < 0: # Downward trend
-            trend_factor -= 0.15
-        else: # Upward trend
-            trend_factor += 0.15
-            
-        if seq_len > 3: # Strong bearish momentum
-            trend_factor -= 0.15
-        elif seq_len < -3: # Strong bullish momentum (if negative)
-            trend_factor += 0.15
 
         # --- FINAL CALCULATION ---
-        total_bias = rejection_factor + channel_factor + trend_factor
+        # Combine factors: Bias + Setup + Rejection
+        total_bias = htf_bias + (set_factor * (1 if rejection_factor > 0 else -1 if rejection_factor < 0 else 0)) + rejection_factor
         
-        # Determine Direction
-        if total_bias > 0.15:
+        # Filtering: Only allow high score if setup aligns with HTF
+        if total_bias > 0.2:
             direction = 1  # BUY
-            score = 0.5 + abs(total_bias)
-        elif total_bias < -0.15:
+            score = 0.6 + abs(total_bias)
+        elif total_bias < -0.2:
             direction = -1 # SELL
-            score = 0.5 + abs(total_bias)
+            score = 0.6 + abs(total_bias)
         else:
-            direction = 0  # NEUTRAL
-            score = 0.5 - abs(total_bias)
-
-        # Clamp score between 0.0 and 1.0
-        score = max(0.0, min(1.0, score))
-        
-        return score, direction
+            direction = 0
+            score = 0.4 # Low confidence if no alignment
+            
+        return max(0.0, min(1.0, score)), direction
 
 # --- Socket Communication Globals ---
 global_socket_status = "DISCONNECTED"
@@ -296,6 +279,14 @@ def parse_mql5_data(data_string):
                 'rejection_candle_volume': float(parts[19]),
                 'bearish_sequence_length': int(float(parts[20]))
             })
+            
+            # 6. Extract MTF Trend Data (if available)
+            if len(parts) >= 24:
+                features.update({
+                    'trend_m15': int(float(parts[21])),
+                    'trend_h1': int(float(parts[22])),
+                    'trend_h4': int(float(parts[23]))
+                })
             # Add calculated ratio
             if features['rejection_candle_total_range'] > 0:
                 features['rejection_candle_body_to_range_ratio'] = features['rejection_candle_body_size'] / features['rejection_candle_total_range']
@@ -402,7 +393,7 @@ def start_server(visualizer_instance):
         s.bind((HOST, PORT))
         s.listen()
         s.settimeout(1.0) # Small timeout for responsiveness to stop event
-        print(f"Python Server listening on {HOST}:{PORT}:{VERSION}")
+        print(f"Python Server listening on {HOST}:{PORT}: Version {VERSION}")
         while not global_stop_event.is_set():
             try:
                 conn, addr = s.accept()
