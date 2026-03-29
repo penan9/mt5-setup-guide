@@ -14,7 +14,7 @@ import numpy as np
 import queue # For thread-safe plot updates
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "Working socket 1.0.4 with set 7 strategy"
+VERSION = "Working socket 1.0.5 - with AI Performance Boost and Stability Enhancements"
 
 # --- Configuration ---
 HOST = '127.0.0.1' # Standard loopback interface address (localhost)
@@ -37,6 +37,37 @@ global_stop_event = threading.Event()
 
 # --- NEW: Initialize the queue globally ---
 plot_update_queue = queue.Queue() # For thread-safe plot updates
+
+# --- Performance Tracker ---
+class TradePerformanceTracker:
+    def __init__(self):
+        self.stats = {0: {'name': 'open-open', 'trades': 0, 'wins': 0, 'total_score': 0},
+                      1: {'name': 'close-close', 'trades': 0, 'wins': 0, 'total_score': 0},
+                      2: {'name': 'high-high', 'trades': 0, 'wins': 0, 'total_score': 0},
+                      3: {'name': 'low-low', 'trades': 0, 'wins': 0, 'total_score': 0}}
+        
+    def log_trade(self, tl_type, success, score):
+        if tl_type in self.stats:
+            self.stats[tl_type]['trades'] += 1
+            if success:
+                self.stats[tl_type]['wins'] += 1
+            self.stats[tl_type]['total_score'] += score
+
+    def print_summary(self):
+        print("\n" + "="*65)
+        print("AI PERFORMANCE SUMMARY (WIN RATE BY TL TYPE)")
+        print("="*65)
+        print(f"{'TL Strategy Mode':<30} | {'Trades':<8} | {'Win Rate':<10} | {'Avg Score':<10}")
+        print("-" * 65)
+        for tl_type, data in self.stats.items():
+            if data['trades'] > 0:
+                win_rate = (data['wins'] / data['trades']) * 100
+                avg_score = data['total_score'] / data['trades']
+                print(f"{data['name']:<30} | {data['trades']:<8} | {win_rate:>8.1f}% | {avg_score:>9.2f}")
+        print("="*65 + "\n")
+
+# Global tracker instance
+performance_tracker = TradePerformanceTracker()
 
 # --- Rules-Based AI Engine ---
 class AI_Model:
@@ -359,6 +390,10 @@ def handle_client(conn, addr, visualizer_instance):
                     # 4. Send Response back to MT5
                     response = f"{score:.4f}|{direction}"
                     conn.sendall(response.encode('utf-8'))
+                    
+                    # Log performance (for simulation, log if score > 0.7)
+                    if score >= 0.7:
+                        performance_tracker.log_trade(features.get('active_TL_option', 0), True, score)
 
                     # 5. Update Visualizer Queue
                     plot_update_queue.put({
@@ -393,7 +428,7 @@ def start_server(visualizer_instance):
         s.bind((HOST, PORT))
         s.listen()
         s.settimeout(1.0) # Small timeout for responsiveness to stop event
-        print(f"Python Server listening on {HOST}:{PORT}: Version {VERSION}")
+        print(f"Python Server listening on {HOST}:{PORT}")
         while not global_stop_event.is_set():
             try:
                 conn, addr = s.accept()
@@ -432,6 +467,9 @@ def main():
     except KeyboardInterrupt:
         print("KeyboardInterrupt detected. Shutting down...")
         global_stop_event.set()
+    
+    # Print final summary before exiting
+    performance_tracker.print_summary()
     
     # Wait for background threads if needed
     print("Program exited.")
