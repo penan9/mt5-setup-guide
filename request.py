@@ -4,476 +4,322 @@ import os
 import time
 import json
 import sys
-from datetime import datetime, timezone
-import pandas as pd
-import mplfinance as mpf
-import matplotlib
-from matplotlib.widgets import Button
-import matplotlib.pyplot as plt
-import numpy as np
-import queue # For thread-safe plot updates
+import joblib
+import queue
+import shutil
 import warnings
+from datetime import datetime
+import pandas as pd
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Button
+import mplfinance as mpf
+from sklearn.ensemble import RandomForestClassifier
+
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "Working socket 1.0.5 - with AI Performance Boost and Stability Enhancements"
+VERSION = "AI Brain Master 10.0 - SnR Validation & Multi-TF TP Scaling"
 
 # --- Configuration ---
-HOST = '127.0.0.1' # Standard loopback interface address (localhost)
-PORT = 8888 # Port to listen on (non-privileged ports are > 1023)
-BUFFER_SIZE = 8192 # Must match MQL5's buf size
+HOST = '127.0.0.1'
+PORT = 8888
+BUFFER_SIZE = 8192
+BRAIN_FILE = "ai_brain.joblib"
+BRAIN_BACKUP = "ai_brain_backup.joblib"
+STATS_FILE = "cumulative_stats.json"
+STATS_BACKUP = "cumulative_stats_backup.json"
+HISTORY_CSV = "MT5_Set_History.csv"
 
 # macOS Stability Settings
 matplotlib.use('TkAgg')
 
-# --- Global Data Storage for Visualization ---
-ohlc_data_history = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume'], dtype=float)
-ohlc_data_history.index = pd.DatetimeIndex([], name='Date')
-
-ai_score_history = []
-ai_direction_history = []
-last_processed_timestamp = 0
-
-# --- NEW: Shutdown Control ---
+# --- Global Control & Data ---
 global_stop_event = threading.Event()
-
-# --- NEW: Initialize the queue globally ---
-plot_update_queue = queue.Queue() # For thread-safe plot updates
-
-# --- Performance Tracker ---
-class TradePerformanceTracker:
-    def __init__(self):
-        self.stats = {0: {'name': 'open-open', 'trades': 0, 'wins': 0, 'total_score': 0},
-                      1: {'name': 'close-close', 'trades': 0, 'wins': 0, 'total_score': 0},
-                      2: {'name': 'high-high', 'trades': 0, 'wins': 0, 'total_score': 0},
-                      3: {'name': 'low-low', 'trades': 0, 'wins': 0, 'total_score': 0}}
-        
-    def log_trade(self, tl_type, success, score):
-        if tl_type in self.stats:
-            self.stats[tl_type]['trades'] += 1
-            if success:
-                self.stats[tl_type]['wins'] += 1
-            self.stats[tl_type]['total_score'] += score
-
-    def print_summary(self):
-        print("\n" + "="*65)
-        print("AI PERFORMANCE SUMMARY (WIN RATE BY TL TYPE)")
-        print("="*65)
-        print(f"{'TL Strategy Mode':<30} | {'Trades':<8} | {'Win Rate':<10} | {'Avg Score':<10}")
-        print("-" * 65)
-        for tl_type, data in self.stats.items():
-            if data['trades'] > 0:
-                win_rate = (data['wins'] / data['trades']) * 100
-                avg_score = data['total_score'] / data['trades']
-                print(f"{data['name']:<30} | {data['trades']:<8} | {win_rate:>8.1f}% | {avg_score:>9.2f}")
-        print("="*65 + "\n")
-
-# Global tracker instance
-performance_tracker = TradePerformanceTracker()
-
-# --- Rules-Based AI Engine ---
-class AI_Model:
-    def __init__(self):
-        print("AI_Model: Rules-Based Engine Initialized.")
-
-    def predict(self, features):
-        """
-        Hierarchical AI Scoring: HTF Context + LTF Setup (7-Set Rejection)
-        """
-        score = 0.5
-        direction = 0
-        
-        # 1. HTF Context (H1 & H4) - Acts as a Multiplier/Filter
-        htf_bias = 0
-        htf_bias += features.get('trend_h4', 0) * 0.15
-        htf_bias += features.get('trend_h1', 0) * 0.15
-        htf_bias += features.get('trend_m15', 0) * 0.10
-        
-        # 2. LTF Setup (7-Set Logic)
-        set_count = features.get('set_count', 0)
-        set_factor = 0.0
-        if set_count == 7:
-            set_factor = 0.3  # Huge boost for the target setup
-        elif set_count > 4:
-            set_factor = 0.1
-            
-        # 3. Rejection Quality (at Set-7)
-        rejection_factor = 0.0
-        if features.get('rejection_candle_total_range', 0) > 0:
-            upper_wick = features.get('rejection_candle_upper_wick_size', 0)
-            lower_wick = features.get('rejection_candle_lower_wick_size', 0)
-            total_range = features.get('rejection_candle_total_range', 1)
-            
-            # Long Upper Wick (Bearish Rejection)
-            if upper_wick > (total_range * 0.5):
-                rejection_factor = -0.3
-            # Long Lower Wick (Bullish Rejection)
-            elif lower_wick > (total_range * 0.5):
-                rejection_factor = 0.3
-
-        # --- FINAL CALCULATION ---
-        # Combine factors: Bias + Setup + Rejection
-        total_bias = htf_bias + (set_factor * (1 if rejection_factor > 0 else -1 if rejection_factor < 0 else 0)) + rejection_factor
-        
-        # Filtering: Only allow high score if setup aligns with HTF
-        if total_bias > 0.2:
-            direction = 1  # BUY
-            score = 0.6 + abs(total_bias)
-        elif total_bias < -0.2:
-            direction = -1 # SELL
-            score = 0.6 + abs(total_bias)
-        else:
-            direction = 0
-            score = 0.4 # Low confidence if no alignment
-            
-        return max(0.0, min(1.0, score)), direction
-
-# --- Socket Communication Globals ---
-global_socket_status = "DISCONNECTED"
-global_current_set_count = 0
-global_current_price = 0.0
-global_ai_model = AI_Model() # Initialize the engine
+plot_update_queue = queue.Queue()
+ohlc_data_history = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'], dtype=float)
+ohlc_data_history.index = pd.DatetimeIndex([], name='Date')
+ai_score_history = []
 global_mt5_symbol = "UNKNOWN"
 global_mt5_timeframe = "UNKNOWN"
+global_socket_status = "DISCONNECTED"
 
+# --- Robust Performance Tracker ---
+class TradePerformanceTracker:
+    def __init__(self, stats_file, backup_file):
+        self.stats_file = stats_file
+        self.backup_file = backup_file
+        self.stats = self.load_with_recovery()
+        
+    def load_with_recovery(self):
+        for path in [self.stats_file, self.backup_file]:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r') as f:
+                        data = json.load(f)
+                        print(f"Loaded stats from {path}")
+                        restored_stats = {int(k): v for k, v in data.items()}
+                        original_names = {0: 'open-open', 1: 'close-close', 2: 'high-high', 3: 'low-low'}
+                        for i, name in original_names.items():
+                            if i not in restored_stats:
+                                restored_stats[i] = {'name': name, 'trades': 0, 'wins': 0, 'total_score': 0}
+                            elif 'TL Option' in restored_stats[i]['name']:
+                                restored_stats[i]['name'] = name
+                        return restored_stats
+                except: continue
+        return {0: {'name': 'open-open', 'trades': 0, 'wins': 0, 'total_score': 0},
+                1: {'name': 'close-close', 'trades': 0, 'wins': 0, 'total_score': 0},
+                2: {'name': 'high-high', 'trades': 0, 'wins': 0, 'total_score': 0},
+                3: {'name': 'low-low', 'trades': 0, 'wins': 0, 'total_score': 0}}
+
+    def save_with_backup(self):
+        try:
+            with open(self.stats_file, 'w') as f:
+                json.dump(self.stats, f, indent=4)
+            shutil.copy2(self.stats_file, self.backup_file)
+        except: pass
+
+    def log_trade(self, tl_option, success, score):
+        if tl_option in self.stats:
+            self.stats[tl_option]['trades'] += 1
+            if success: self.stats[tl_option]['wins'] += 1
+            self.stats[tl_option]['total_score'] += score
+            self.save_with_backup()
+
+    def print_summary(self):
+        print("\n" + "="*85)
+        print(f"MASTER AI PERFORMANCE SUMMARY - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("="*85)
+        print(f"{'TL Strategy Mode':<25} | {'Trades':<8} | {'Wins':<6} | {'Win Rate':<10} | {'Avg AI Score':<12}")
+        print("-" * 85)
+        for tl_opt, data in self.stats.items():
+            trades = data['trades']
+            wr = (data['wins'] / trades * 100) if trades > 0 else 0.0
+            avg = (data['total_score'] / trades) if trades > 0 else 0.0
+            print(f"{data['name']:<25} | {trades:<8} | {data['wins']:<6} | {wr:>8.1f}% | {avg:>11.2f}")
+        print("="*85 + "\n")
+
+# --- Persistent AI Brain ---
+class AIBrain:
+    def __init__(self, brain_file, backup_file, history_csv):
+        self.brain_file = brain_file
+        self.backup_file = backup_file
+        self.history_csv = history_csv
+        self.model = self.load_with_recovery()
+        self.feature_cols = [
+            'set_magnitude', 'bars_duration', 'hour_of_day', 'dist_from_be', 
+            'active_TL_option', 'dynamic_TL_slope', 'snr_weight', 
+            'is_at_snr', 'tp_m15', 'tp_h1', 'rejection_candle_total_range', 
+            'rejection_candle_body_size', 'rejection_candle_upper_wick_size', 
+            'rejection_candle_lower_wick_size', 'rejection_candle_body_to_range_ratio', 
+            'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume', 
+            'bearish_sequence_length'
+        ]
+
+    def load_with_recovery(self):
+        for path in [self.brain_file, self.backup_file]:
+            if os.path.exists(path):
+                try:
+                    print(f"Loading brain from {path}...")
+                    return joblib.load(path)
+                except: continue
+        print("Initializing new brain...")
+        return RandomForestClassifier(n_estimators=100, random_state=42)
+
+    def save_with_backup(self):
+        try:
+            joblib.dump(self.model, self.brain_file)
+            shutil.copy2(self.brain_file, self.backup_file)
+        except: pass
+
+    def predict(self, features):
+        score_rules = 0.5
+        direction = 0
+        
+        # 1. SN-R / ZONE VALIDATION (Exhaustion Rule)
+        snr_weight = features.get('snr_weight', 0)
+        is_at_snr = features.get('is_at_snr', False)
+        snr_factor = (snr_weight * 0.1) if is_at_snr else -0.2
+        
+        # 2. MULTI-TF TREND CONFLUENCE (Mandatory Alignment)
+        trend_m30 = features.get('trend_m30', 0)
+        trend_h1 = features.get('trend_h1', 0)
+        trend_h4 = features.get('trend_h4', 0)
+        
+        # 3. REJECTION PRECISION (Sharp Wick at Boundary)
+        rejection_factor = 0.0
+        if features.get('rejection_candle_total_range', 0) > 0:
+            upper = features.get('rejection_candle_upper_wick_size', 0)
+            lower = features.get('rejection_candle_lower_wick_size', 0)
+            total = features.get('rejection_candle_total_range', 1)
+            if upper > (total * 0.6): rejection_factor = -0.4 # Sharp Bearish
+            elif lower > (total * 0.6): rejection_factor = 0.4 # Sharp Bullish
+            
+        # 4. FINAL BIAS CALCULATION
+        total_bias = snr_factor + rejection_factor
+        
+        # Mandatory Trend Filter: Must align with at least one higher TF
+        if total_bias > 0.3 and (trend_m30 == 1 or trend_h1 == 1):
+            direction = 1
+            score_rules = 0.6 + abs(total_bias)
+        elif total_bias < -0.3 and (trend_m30 == -1 or trend_h1 == -1):
+            direction = -1
+            score_rules = 0.6 + abs(total_bias)
+        else:
+            direction = 0
+            score_rules = 0.4 # Low confidence if no alignment or SnR
+            
+        # 5. ML BRAIN PREDICTION
+        ml_prob = 0.5
+        try:
+            if hasattr(self.model, "classes_"):
+                hour = datetime.fromtimestamp(features.get('timestamp', time.time())).hour
+                feat_vec = [features.get('set_magnitude', 0), features.get('bars_duration', 0), hour, features.get('dist_from_be', 0), features.get('active_TL_option', 0), features.get('dynamic_TL_slope', 0), features.get('snr_weight', 0), features.get('is_at_snr', 0), features.get('tp_m15', 0), features.get('tp_h1', 0), features.get('rejection_candle_total_range', 0), features.get('rejection_candle_body_size', 0), features.get('rejection_candle_upper_wick_size', 0), features.get('rejection_candle_lower_wick_size', 0), features.get('rejection_candle_body_to_range_ratio', 0), int(features.get('rejection_candle_is_large_relative_to_average', False)), features.get('rejection_candle_volume', 0), features.get('bearish_sequence_length', 0)]
+                ml_prob = self.model.predict_proba([feat_vec])[0][1]
+        except: pass
+        
+        final_score = (score_rules * 0.4) + (ml_prob * 0.6)
+        return max(0.0, min(1.0, final_score)), direction
+
+# --- Global Instances ---
+performance_tracker = TradePerformanceTracker(STATS_FILE, STATS_BACKUP)
+ai_brain = AIBrain(BRAIN_FILE, BRAIN_BACKUP, HISTORY_CSV)
+
+# --- Restored MT5-Style Visualizer ---
 class Visualizer:
     def __init__(self, symbol_name):
         self.symbol_name = symbol_name
-        self.fig = None
-        self.ax_main = None
-        self.ax_volume = None
-        self.ax_ai = None
-        self.mpf_style = None
-        self.initial_plot_done = False
-        self.create_figure()
-
-    def on_close(self, event):
-        """Handle the window 'X' click event."""
-        print("Window closed. Shutting down gracefully...")
-        global_stop_event.set()
-
-    def create_figure(self):
-        # 1. Define MT5-Specific Colors
-        self.mc = mpf.make_marketcolors(
-            up='#00ff00',       # MT5 Green
-            down='#ff0000',     # MT5 Red
-            edge='inherit',     # Edges match candle body
-            wick='inherit', 
-            volume='gray',
-            ohlc='inherit'
-        )
-
-        # 2. Define the "MetaTrader 5 Black" Style
-        self.mpf_style = mpf.make_mpf_style(
-            base_mpf_style='charles', 
-            marketcolors=self.mc,
-            facecolor='black',
-            figcolor='black',
-            gridcolor='#2c2c2c',  # Subtle dark grid
-            gridstyle='--',
-            rc={
-                'axes.edgecolor': 'white',
-                'ytick.color': 'white',
-                'xtick.color': 'white',
-                'axes.labelcolor': 'white',
-                'font.size': 8
-            },
-            y_on_right=True       # Price on the right side
-        )
-
+        self.mc = mpf.make_marketcolors(up='#00ff00', down='#ff0000', edge='inherit', wick='inherit', volume='gray', ohlc='inherit')
+        self.mpf_style = mpf.make_mpf_style(base_mpf_style='charles', marketcolors=self.mc, facecolor='black', figcolor='black', gridcolor='#2c2c2c', gridstyle='--', rc={'axes.edgecolor': 'white', 'ytick.color': 'white', 'xtick.color': 'white', 'axes.labelcolor': 'white', 'font.size': 8}, y_on_right=True)
         self.fig = plt.figure(figsize=(10, 8), facecolor='black')
-        self.fig.canvas.mpl_connect('close_event', self.on_close) # Connect close event
-        
-        gs = self.fig.add_gridspec(3, 1, height_ratios=[3, 1, 1], hspace=0.1)
+        gs = self.fig.add_gridspec(4, 1, height_ratios=[3, 1, 1, 0.5], hspace=0.2)
+        self.ax_main = self.fig.add_subplot(gs[0, 0], facecolor='black')
+        self.ax_ai = self.fig.add_subplot(gs[1, 0], facecolor='black', sharex=self.ax_main)
+        self.ax_kpi = self.fig.add_subplot(gs[2, 0], facecolor='black')
+        self.ax_stop = self.fig.add_subplot(gs[3, 0])
+        self.btn_stop = Button(self.ax_stop, 'STOP & SAVE', color='red', hovercolor='darkred')
+        self.btn_stop.on_clicked(lambda e: global_stop_event.set())
+        self.fig.canvas.mpl_connect('close_event', lambda e: global_stop_event.set())
+        print("Visualizer window initialized.")
 
-        self.ax_main = self.fig.add_subplot(gs[0, 0])
-        self.ax_volume = self.fig.add_subplot(gs[1, 0], sharex=self.ax_main)
-        self.ax_ai = self.fig.add_subplot(gs[2, 0], sharex=self.ax_main)
-
-        self.ax_main.set_facecolor('black')
-        self.ax_main.tick_params(axis='y', labelcolor='white')
-        self.ax_main.tick_params(axis='x', labelcolor='white')
-        self.ax_main.grid(True, linestyle='--', alpha=0.6, color='gray')
-
-        self.ax_volume.set_facecolor('black')
-        self.ax_volume.tick_params(axis='y', labelcolor='white')
-        self.ax_volume.tick_params(axis='x', labelcolor='white')
-        self.ax_volume.set_ylabel('Volume', color='white')
-        self.ax_volume.grid(True, linestyle='--', alpha=0.6, color='gray')
-
-        self.ax_ai.set_facecolor('black')
-        self.ax_ai.tick_params(axis='y', labelcolor='white')
-        self.ax_ai.tick_params(axis='x', labelcolor='white')
-        self.ax_ai.set_ylabel('AI Score', color='white')
-        self.ax_ai.grid(True, linestyle='--', alpha=0.6, color='gray')
-
-        self.fig.suptitle(f'{self.symbol_name} ({global_mt5_timeframe}) - Status: {global_socket_status}', color='white', y=0.98)
-        self.fig.subplots_adjust(top=0.92, bottom=0.08, left=0.10, right=0.95, hspace=0.3)
-        self.fig.canvas.draw_idle()
-        plt.show(block=False)
-
-    def update_plot(self, ohlc_df, ai_scores, ai_directions, current_set, socket_status):
-        if not plt.fignum_exists(self.fig.number):
-            return # Don't update if window is closed
-
-        self.fig.suptitle(f'{self.symbol_name} ({global_mt5_timeframe}) - Status: {socket_status} - Set: {current_set}', color='white', y=0.98)
-
+    def update_plot(self, ohlc_df, ai_scores, current_set, status, symbol, tf, snr_weight):
+        if not plt.fignum_exists(self.fig.number): return
+        self.fig.suptitle(f'{symbol} ({tf}) - Status: {status} - Set: {current_set} - SnR Weight: {snr_weight}', color='white', y=0.98)
         if not ohlc_df.empty:
-            # Clear for fresh render
             self.ax_main.clear()
             self.ax_ai.clear()
-            self.ax_volume.set_visible(False) # Volume hidden
-
-            # Addplot for AI Score (Cyan line)
-            apds = [
-                mpf.make_addplot(ai_scores, color='#00ffff', ax=self.ax_ai, width=1.2)
-            ]
-
-            # Formatting axes to stay black
-            for ax in [self.ax_main, self.ax_ai]:
-                ax.set_facecolor('black')
-                ax.tick_params(axis='both', colors='white')
-                ax.grid(True, linestyle='--', alpha=0.3, color='gray')
-
-            # Execute MT5-Style Plot
-            mpf.plot(
-                ohlc_df,
-                type='candle',
-                style=self.mpf_style,
-                ax=self.ax_main,
-                volume=False,
-                addplot=apds,
-                show_nontrading=False,
-                datetime_format='%H:%M'
-            )
-
-            # Draw a horizontal "Current Price" line (White/Blue like MT5)
-            current_price = ohlc_df['Close'].iloc[-1]
-            self.ax_main.axhline(current_price, color='white', linestyle='-', linewidth=0.5, alpha=0.7)
-
-            self.fig.canvas.draw_idle()
-            self.fig.canvas.flush_events()
-                
-        else:
-            # Handle empty data state
-            self.ax_main.clear()
-            self.ax_main.text(0.5, 0.5, "Waiting for 100 bars of data...", 
-                              transform=self.ax_main.transAxes, color='white',
-                              fontsize=12, ha='center', va='center')
-            self.fig.canvas.draw_idle()
+            apds = [mpf.make_addplot(ai_scores, color='#00ffff', ax=self.ax_ai, width=1.2)]
+            mpf.plot(ohlc_df, type='candle', style=self.mpf_style, ax=self.ax_main, addplot=apds, show_nontrading=False, datetime_format='%H:%M')
+            self.ax_main.axhline(ohlc_df['Close'].iloc[-1], color='white', linestyle='-', linewidth=0.5, alpha=0.7)
+            self.ax_ai.set_ylabel('AI Score', color='white')
+            self.ax_ai.set_ylim(0, 1)
+            
+            # KPI Table Overlay
+            self.ax_kpi.clear()
+            self.ax_kpi.axis('off')
+            kpi_text = "TL STRATEGY PERFORMANCE (MASTER V5):\n"
+            for i, d in performance_tracker.stats.items():
+                wr = (d['wins']/d['trades']*100) if d['trades']>0 else 0.0
+                kpi_text += f"{d['name']:<15}: {d['trades']:>3} Trades | {wr:>5.1f}% Win Rate\n"
+            self.ax_kpi.text(0.05, 0.5, kpi_text, color='lime', fontsize=9, family='monospace', va='center')
+            
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
 
 def parse_mql5_data(data_string):
     try:
-        # 1. Clean up null bytes and whitespace only
-        clean_data = data_string.replace('\x00', '').strip()
-        
-        # 2. Split the main blocks (History | Symbol | Time | Set | TF | Features)
-        parts = clean_data.split('|')
-
-        if len(parts) < 4:
-            return None
-
-        # 3. Process the 100 semicolon-separated candles
+        parts = data_string.replace('\x00', '').strip().split('|')
+        if len(parts) < 5: return None, None
         raw_history = parts[0].strip(';').split(';')
-        history_list = []
-        
+        ohlc_list = []
         for candle in raw_history:
             if not candle: continue
-            prices = [float(p) for p in candle.split(',')]
-            history_list.append(prices + [0.0]) 
-
-        # 4. Extract basic metadata
-        features = {
-            'type': 'trade_data',
-            'history_list': history_list,
-            'symbol': parts[1],
-            'timestamp': int(float(parts[2])),
-            'set_count': int(float(parts[3])),
-            'timeframe': parts[4] if len(parts) > 4 else "UNK"
-        }
-
-        # 5. Extract captured features if available
-        if len(parts) >= 21: # History | Symbol | Time | Set | TF | 16 Features
+            o, h, l, c = map(float, candle.split(','))
+            ohlc_list.append([o, h, l, c])
+        df = pd.DataFrame(ohlc_list, columns=['Open', 'High', 'Low', 'Close'])
+        df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='15min')
+        
+        features = {'symbol': parts[1], 'timestamp': int(float(parts[2])), 'set_count': int(float(parts[3])), 'timeframe': parts[4]}
+        if len(parts) >= 21:
             features.update({
-                'set_magnitude': int(float(parts[5])),
-                'bars_duration': int(float(parts[6])),
-                'dist_from_be': float(parts[7]),
-                'active_TL_option': int(float(parts[8])),
-                'dynamic_TL_slope': float(parts[9]),
-                'dynamic_TL_distance_current_price': float(parts[10]),
-                'channel_top_distance_current_price': float(parts[11]),
-                'channel_bottom_distance_current_price': float(parts[12]),
-                'channel_width': float(parts[13]),
-                'rejection_candle_total_range': float(parts[14]),
-                'rejection_candle_body_size': float(parts[15]),
-                'rejection_candle_upper_wick_size': float(parts[16]),
-                'rejection_candle_lower_wick_size': float(parts[17]),
-                'rejection_candle_is_large_relative_to_average': bool(int(float(parts[18]))),
-                'rejection_candle_volume': float(parts[19]),
+                'set_magnitude': float(parts[5]), 'bars_duration': int(float(parts[6])), 'dist_from_be': float(parts[7]),
+                'active_TL_option': int(float(parts[8])), 'dynamic_TL_slope': float(parts[9]), 'snr_weight': int(float(parts[10])),
+                'is_at_snr': bool(int(float(parts[11]))), 'tp_m15': float(parts[12]), 'tp_h1': float(parts[13]),
+                'rejection_candle_total_range': float(parts[14]), 'rejection_candle_body_size': float(parts[15]),
+                'rejection_candle_upper_wick_size': float(parts[16]), 'rejection_candle_lower_wick_size': float(parts[17]),
+                'rejection_candle_is_large_relative_to_average': bool(int(float(parts[18]))), 'rejection_candle_volume': float(parts[19]),
                 'bearish_sequence_length': int(float(parts[20]))
             })
-            
-            # 6. Extract MTF Trend Data (if available)
-            if len(parts) >= 24:
-                features.update({
-                    'trend_m15': int(float(parts[21])),
-                    'trend_h1': int(float(parts[22])),
-                    'trend_h4': int(float(parts[23]))
-                })
-            # Add calculated ratio
-            if features['rejection_candle_total_range'] > 0:
-                features['rejection_candle_body_to_range_ratio'] = features['rejection_candle_body_size'] / features['rejection_candle_total_range']
-            else:
-                features['rejection_candle_body_to_range_ratio'] = 0.0
+            features['rejection_candle_body_to_range_ratio'] = features['rejection_candle_body_size'] / features['rejection_candle_total_range'] if features['rejection_candle_total_range'] > 0 else 0.0
+        if len(parts) >= 24:
+            features.update({'trend_m30': int(float(parts[21])), 'trend_h1': int(float(parts[22])), 'trend_h4': int(float(parts[23]))})
+        return df, features
+    except: return None, None
 
-        return features
-    except Exception as e:
-        print(f"Parsing Error: {e}")
-        return None
-    
-def handle_client(conn, addr, visualizer_instance):
-    global ohlc_data_history, ai_score_history, ai_direction_history, last_processed_timestamp
-    global global_socket_status, global_current_set_count, global_current_price
-    global global_mt5_symbol, global_mt5_timeframe, plot_update_queue
-
-    print(f"Connected by {addr}")
+def handle_client(conn, addr):
+    global ohlc_data_history, ai_score_history, global_mt5_symbol, global_mt5_timeframe, global_socket_status
     global_socket_status = "CONNECTED"
-    conn.settimeout(1.0) # Small timeout for responsiveness to stop event
-
+    print(f"MT5 Connected from {addr}")
     try:
         while not global_stop_event.is_set():
-            try:
-                data = conn.recv(BUFFER_SIZE)
-                if not data:
-                    break
+            data = conn.recv(BUFFER_SIZE)
+            if not data: break
+            df, features = parse_mql5_data(data.decode('utf-8', errors='ignore'))
+            if features:
+                score, direction = ai_brain.predict(features)
+                conn.sendall(f"{score:.4f}|{direction}|20".encode('utf-8'))
+                ohlc_data_history = df
+                ai_score_history = [score] * len(df)
+                global_mt5_symbol = features['symbol']
+                global_mt5_timeframe = features['timeframe']
+                # INSTANT TF DETECTION: Clear old history if timeframe changes
+                if global_mt5_timeframe != features['timeframe']:
+                    ohlc_data_history = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'], dtype=float)
+                    ai_score_history = []
+                    while not plot_update_queue.empty():
+                        try: plot_update_queue.get_nowait()
+                        except: break
+                
+                if score >= 0.70:
+                    performance_tracker.log_trade(features.get('active_TL_option', 0), True, score)
+                
+                plot_update_queue.put((ohlc_data_history, ai_score_history, features['set_count'], global_socket_status, global_mt5_symbol, global_mt5_timeframe, features.get('snr_weight', 0)))
+    except Exception as e: print(f"Client error: {e}")
+    finally: global_socket_status = "DISCONNECTED"; conn.close(); print("MT5 Disconnected.")
 
-                # 1. Decode and Parse
-                received_str = data.decode('utf-8', errors='ignore')
-                features = parse_mql5_data(received_str)
-
-                if not features:
-                    continue
-
-                # 2. Handle Heartbeats
-                if features.get('type') == 'heartbeat':
-                    conn.sendall(b"0.0|0")
-                    continue
-
-                # 3. Handle Trade Data (The 100-candle block)
-                if features.get('type') == 'trade_data':
-                    # Update globals for the visualizer title
-                    global_current_set_count = features.get('set_count', 0)
-                    global_mt5_symbol = features.get('symbol', 'XAUUSD')
-                    global_mt5_timeframe = features.get('timeframe', 'UNK')
-
-                    # Create a fresh timestamp index for the 100 candles
-                    end_ts = features['timestamp']
-                    # Assume 60 seconds (M1) per candle
-                    start_ts = end_ts - (99 * 60)
-                    new_date_range = pd.to_datetime(np.linspace(start_ts, end_ts, 100), unit='s', utc=True)
-                    
-                    # Overwrite history with the 100 candles sent from MT5
-                    ohlc_data_history = pd.DataFrame(
-                        features['history_list'],
-                        columns=['Open', 'High', 'Low', 'Close', 'Volume'],
-                        index=new_date_range
-                    )
-                    
-                    # Get AI Prediction (Score)
-                    score = 0.5
-                    direction = 0
-                    if global_ai_model:
-                        score, direction = global_ai_model.predict(features)
-
-                    # Sync AI score history to match the 100 candles
-                    ai_score_history = [score] * 100
-                    ai_direction_history = [direction] * 100
-
-                    # 4. Send Response back to MT5
-                    response = f"{score:.4f}|{direction}"
-                    conn.sendall(response.encode('utf-8'))
-                    
-                    # Log performance (for simulation, log if score > 0.7)
-                    if score >= 0.7:
-                        performance_tracker.log_trade(features.get('active_TL_option', 0), True, score)
-
-                    # 5. Update Visualizer Queue
-                    plot_update_queue.put({
-                        'ohlc_df': ohlc_data_history.copy(),
-                        'ai_scores': list(ai_score_history),
-                        'ai_directions': list(ai_direction_history),
-                        'current_set': global_current_set_count,
-                        'socket_status': "CONNECTED"
-                    })
-
-                    # --- NEW: Only print when Symbol or Timeframe changes ---
-                    static_last_state = getattr(handle_client, 'last_state', None)
-                    current_state = f"{global_mt5_symbol}_{global_mt5_timeframe}"
-                    
-                    if static_last_state != current_state:
-                        print(f"Success! {global_mt5_symbol} ({global_mt5_timeframe}) processed.")
-                        handle_client.last_state = current_state
-            except socket.timeout:
-                continue
-
-    except Exception as e:
-        if not global_stop_event.is_set():
-            print(f"Client Handling Error: {e}")
-    finally:
-        conn.close()
-        global_socket_status = "DISCONNECTED"
-        print(f"Disconnected from {addr}")
-
-def start_server(visualizer_instance):
+def socket_server():
+    print(f"Socket server listening on {HOST}:{PORT}...")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind((HOST, PORT))
-        s.listen()
-        s.settimeout(1.0) # Small timeout for responsiveness to stop event
-        print(f"Python Server listening on {HOST}:{PORT}")
+        s.bind((HOST, PORT)); s.listen(); s.settimeout(1.0)
         while not global_stop_event.is_set():
             try:
                 conn, addr = s.accept()
-                client_thread = threading.Thread(target=handle_client, args=(conn, addr, visualizer_instance))
-                client_thread.daemon = True
-                client_thread.start()
-            except socket.timeout:
-                continue
-    print("Socket Server stopped.")
+                threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+            except socket.timeout: continue
 
 def main():
-    # 1. Initialize Visualizer
-    viz = Visualizer("Waiting for MT5...")
-
-    # 2. Start Socket Server in a background thread
-    server_thread = threading.Thread(target=start_server, args=(viz,))
-    server_thread.daemon = True
-    server_thread.start()
-
-    # 3. Main Loop: Update Plot from Queue (Thread-Safe)
+    print(f"Starting {VERSION}...")
+    visualizer = Visualizer("MT5 AI Master V5")
+    threading.Thread(target=socket_server, daemon=True).start()
+    
+    last_summary = time.time()
     try:
         while not global_stop_event.is_set():
+            if time.time() - last_summary > 60:
+                performance_tracker.print_summary()
+                last_summary = time.time()
+            
             try:
-                # Check for updates every 100ms
-                update_data = plot_update_queue.get(timeout=0.1)
-                viz.update_plot(
-                    update_data['ohlc_df'],
-                    update_data['ai_scores'],
-                    update_data['ai_directions'],
-                    update_data['current_set'],
-                    update_data['socket_status']
-                )
-            except queue.Empty:
-                plt.pause(0.01) # Keep the UI responsive
-                continue
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt detected. Shutting down...")
-        global_stop_event.set()
+                item = plot_update_queue.get_nowait()
+                visualizer.update_plot(*item)
+            except queue.Empty: pass
+            
+            plt.pause(0.01)
+    except KeyboardInterrupt: global_stop_event.set()
     
-    # Print final summary before exiting
-    performance_tracker.print_summary()
-    
-    # Wait for background threads if needed
-    print("Program exited.")
-    sys.exit(0)
+    print("Shutting down...")
+    ai_brain.save_with_backup()
+    performance_tracker.save_with_backup()
+    print("Master AI Data Saved. Shutdown complete.")
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
