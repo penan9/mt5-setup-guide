@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT5 AI Self-Learning System - Interactive Setup Guide</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🤖 MT5 AI Self-Learning System</h1>
+                <p class="subtitle">Interactive Setup Guide for Autonomous Trading</p>
+            </div>
+        </header>
+
+        <!-- Progress Bar -->
+        <div class="progress-container">
+            <div class="progress-bar" id="progressBar"></div>
+            <div class="progress-text">
+                <span id="currentStep">Step 1</span> of <span id="totalSteps">5</span>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Step 1: Introduction -->
+            <section class="step" id="step1" style="display: block;">
+                <div class="step-header">
+                    <h2>Step 1: Understanding the System</h2>
+                    <p class="step-number">1 / 5</p>
+                </div>
+                <div class="step-content">
+                    <div class="info-box">
+                        <h3>What is the MT5 AI Self-Learning System?</h3>
+                        <p>This system connects your MetaTrader 5 Expert Advisor to a Python-based AI engine that continuously learns from your trading history and improves its strategy automatically every time you connect.</p>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <div class="feature-icon">📊</div>
+                            <h4>Auto-Learning</h4>
+                            <p>Trains on historical trade data every connection</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">⚙️</div>
+                            <h4>Dynamic Tuning</h4>
+                            <p>Automatically adjusts thresholds and parameters</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">🎯</div>
+                            <h4>Real-time Prediction</h4>
+                            <p>Analyzes market conditions for trade approval</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">🔄</div>
+                            <h4>Continuous Improvement</h4>
+                            <p>Gets smarter with every trade executed</p>
+                        </div>
+                    </div>
+
+                    <div class="system-architecture">
+                        <h3>System Components</h3>
+                        <div class="architecture-diagram">
+                            <div class="component">
+                                <strong>MT5 Expert Advisor</strong>
+                                <p>Captures trade features</p>
+                            </div>
+                            <div class="arrow">↔️</div>
+                            <div class="component">
+                                <strong>Python AI Engine</strong>
+                                <p>Learns & predicts</p>
+                            </div>
+                            <div class="arrow">↔️</div>
+                            <div class="component">
+                                <strong>Trade History CSV</strong>
+                                <p>Accumulates data</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="step-navigation">
+                    <button class="btn btn-secondary" onclick="previousStep()" style="visibility: hidden;">← Previous</button>
+                    <button class="btn btn-primary" onclick="nextStep()">Next →</button>
+                </div>
+            </section>
+
+            <!-- Step 2: Python Setup -->
+            <section class="step" id="step2">
+                <div class="step-header">
+                    <h2>Step 2: Python Environment Setup</h2>
+                    <p class="step-number">2 / 5</p>
+                </div>
+                <div class="step-content">
+                    <div class="info-box">
+                        <h3>Install Required Python Libraries</h3>
+                        <p>The Python AI engine requires several libraries for machine learning and data processing.</p>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>1. Check Python Installation</h3>
+                        <p>First, verify that Python 3.7+ is installed on your system:</p>
+                        <div class="code-block">
+                            <code>python --version</code>
+                            <button class="copy-btn" onclick="copyCode(this)">📋 Copy</button>
+                        </div>
+                        <p class="note">If Python is not installed, download it from <a href="https://www.python.org/downloads/" target="_blank">python.org</a></p>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>2. Install Required Libraries</h3>
+                        <p>Run the following command to install all dependencies:</p>
+                        <div class="code-block">
+                            <code>pip install pandas numpy scikit-learn joblib</code>
+                            <button class="copy-btn" onclick="copyCode(this)">📋 Copy</button>
+                        </div>
+                        <div class="library-info">
+                            <div class="library-item">
+                                <strong>pandas</strong> - Data manipulation and analysis
+                            </div>
+                            <div class="library-item">
+                                <strong>numpy</strong> - Numerical computing
+                            </div>
+                            <div class="library-item">
+                                <strong>scikit-learn</strong> - Machine learning algorithms
+                            </div>
+                            <div class="library-item">
+                                <strong>joblib</strong> - Model persistence
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>3. Verify Installation</h3>
+                        <p>Test if all libraries are installed correctly:</p>
+                        <div class="code-block">
+                            <code>python -c "import pandas, numpy, sklearn, joblib; print('All libraries installed!')"</code>
+                            <button class="copy-btn" onclick="copyCode(this)">📋 Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="checklist">
+                        <h3>Setup Checklist</h3>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Python 3.7+ installed</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>pandas library installed</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>numpy library installed</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>scikit-learn library installed</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>joblib library installed</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="step-navigation">
+                    <button class="btn btn-secondary" onclick="previousStep()">← Previous</button>
+                    <button class="btn btn-primary" onclick="nextStep()">Next →</button>
+                </div>
+            </section>
+
+            <!-- Step 3: MT5 Configuration -->
+            <section class="step" id="step3">
+                <div class="step-header">
+                    <h2>Step 3: MetaTrader 5 Configuration</h2>
+                    <p class="step-number">3 / 5</p>
+                </div>
+                <div class="step-content">
+                    <div class="info-box">
+                        <h3>Configure MT5 for AI Engine Communication</h3>
+                        <p>MetaTrader 5 needs to be configured to allow socket communication with the Python AI engine.</p>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Step 1: Open MT5 Options</h3>
+                        <ol class="numbered-list">
+                            <li>Open <strong>MetaTrader 5</strong></li>
+                            <li>Click on <strong>Tools</strong> in the menu bar</li>
+                            <li>Select <strong>Options</strong></li>
+                        </ol>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Step 2: Configure Expert Advisors</h3>
+                        <ol class="numbered-list">
+                            <li>In the Options window, go to the <strong>Expert Advisors</strong> tab</li>
+                            <li>Check the following boxes:
+                                <ul class="sub-list">
+                                    <li>✓ <strong>Allow automated trading</strong></li>
+                                    <li>✓ <strong>Allow DLL imports</strong></li>
+                                    <li>✓ <strong>Allow WebRequest for listed URL</strong></li>
+                                </ul>
+                            </li>
+                            <li>In the URL list, add: <code>http://127.0.0.1:8888</code></li>
+                        </ol>
+                    </div>
+
+                    <div class="visual-guide">
+                        <div class="guide-image">
+                            <div class="placeholder-image">
+                                <p>📸 MT5 Options - Expert Advisors Tab</p>
+                                <small>(Check "Allow DLL imports" and "Allow WebRequest")</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Step 3: Compile the Expert Advisor</h3>
+                        <ol class="numbered-list">
+                            <li>Open the <strong>MetaEditor</strong> (Ctrl+Shift+E in MT5)</li>
+                            <li>Open the file <code>Improved_SelfLearning_EA.mq5</code></li>
+                            <li>Click <strong>Compile</strong> (F7) or use File → Compile</li>
+                            <li>Ensure there are no errors in the compilation</li>
+                        </ol>
+                    </div>
+
+                    <div class="checklist">
+                        <h3>MT5 Configuration Checklist</h3>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Allow automated trading enabled</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Allow DLL imports enabled</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Allow WebRequest enabled</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>URL 127.0.0.1:8888 added to whitelist</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Expert Advisor compiled successfully</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="step-navigation">
+                    <button class="btn btn-secondary" onclick="previousStep()">← Previous</button>
+                    <button class="btn btn-primary" onclick="nextStep()">Next →</button>
+                </div>
+            </section>
+
+            <!-- Step 4: Running the System -->
+            <section class="step" id="step4">
+                <div class="step-header">
+                    <h2>Step 4: Running the System</h2>
+                    <p class="step-number">4 / 5</p>
+                </div>
+                <div class="step-content">
+                    <div class="info-box">
+                        <h3>Start the Python Engine and Attach the EA</h3>
+                        <p>Follow the steps below to launch the complete system. <strong>Important: Start the Python engine FIRST, then attach the EA in MT5.</strong></p>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Step 1: Start the Python AI Engine</h3>
+                        <p>Open a terminal/command prompt and navigate to your project directory, then run:</p>
+                        <div class="code-block">
+                            <code>python self_learning_engine.py</code>
+                            <button class="copy-btn" onclick="copyCode(this)">📋 Copy</button>
+                        </div>
+                        <p class="note">You should see: <code>Self-Learning Engine started on 127.0.0.1:8888</code></p>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Step 2: Attach the EA to MT5</h3>
+                        <ol class="numbered-list">
+                            <li>In MetaTrader 5, open a chart (any symbol and timeframe)</li>
+                            <li>Right-click on the chart and select <strong>Expert Advisors</strong> → <strong>Manage</strong></li>
+                            <li>Click <strong>Add</strong> and select <code>Improved_SelfLearning_EA</code></li>
+                            <li>Click <strong>OK</strong></li>
+                        </ol>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Step 3: Monitor the Connection</h3>
+                        <p>Once the EA is attached, you should see in the Python console:</p>
+                        <div class="code-block">
+                            <code>MT5 Connected: ('127.0.0.1', ...)<br>Successfully learned from X trades</code>
+                            <button class="copy-btn" onclick="copyCode(this)">📋 Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-success">
+                        <strong>✓ System Running!</strong>
+                        <p>The Python engine is now learning from your MT5 trades and improving the strategy in real-time.</p>
+                    </div>
+
+                    <div class="checklist">
+                        <h3>Startup Checklist</h3>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Python engine started successfully</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Expert Advisor attached to chart</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Connection established (verified in console)</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>AI engine learning from trade history</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="step-navigation">
+                    <button class="btn btn-secondary" onclick="previousStep()">← Previous</button>
+                    <button class="btn btn-primary" onclick="nextStep()">Next →</button>
+                </div>
+            </section>
+
+            <!-- Step 5: Maintenance & Monitoring -->
+            <section class="step" id="step5">
+                <div class="step-header">
+                    <h2>Step 5: Maintenance & Monitoring</h2>
+                    <p class="step-number">5 / 5</p>
+                </div>
+                <div class="step-content">
+                    <div class="info-box">
+                        <h3>Keep Your System Running Smoothly</h3>
+                        <p>Monitor and maintain your AI trading system for optimal performance.</p>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Key Files to Monitor</h3>
+                        <div class="file-list">
+                            <div class="file-item">
+                                <strong>ai_brain.joblib</strong>
+                                <p>The trained AI model. Automatically updated after each learning cycle.</p>
+                            </div>
+                            <div class="file-item">
+                                <strong>MT5_Set_History.csv</strong>
+                                <p>Historical trade data. The AI learns from this file every connection.</p>
+                            </div>
+                            <div class="file-item">
+                                <strong>strategy_config.json</strong>
+                                <p>Current strategy parameters (threshold, max hold duration). Updated automatically.</p>
+                            </div>
+                            <div class="file-item">
+                                <strong>ai_brain_backup.joblib</strong>
+                                <p>Automatic backup of your AI model for recovery.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>How Self-Learning Works</h3>
+                        <div class="learning-flow">
+                            <div class="flow-step">
+                                <div class="flow-number">1</div>
+                                <p>MT5 connects to Python engine</p>
+                            </div>
+                            <div class="flow-arrow">→</div>
+                            <div class="flow-step">
+                                <div class="flow-number">2</div>
+                                <p>Python reads trade history CSV</p>
+                            </div>
+                            <div class="flow-arrow">→</div>
+                            <div class="flow-step">
+                                <div class="flow-number">3</div>
+                                <p>AI model trains on data</p>
+                            </div>
+                            <div class="flow-arrow">→</div>
+                            <div class="flow-step">
+                                <div class="flow-number">4</div>
+                                <p>Parameters auto-adjust</p>
+                            </div>
+                            <div class="flow-arrow">→</div>
+                            <div class="flow-step">
+                                <div class="flow-number">5</div>
+                                <p>Better predictions next time</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Performance Monitoring</h3>
+                        <p>Check your strategy's performance by reviewing:</p>
+                        <ul class="bullet-list">
+                            <li><strong>Win Rate:</strong> Percentage of profitable trades</li>
+                            <li><strong>Trade Count:</strong> Number of trades executed</li>
+                            <li><strong>AI Confidence Score:</strong> How confident the AI is in each trade (0-1)</li>
+                            <li><strong>Dynamic Threshold:</strong> Minimum score required to approve trades</li>
+                        </ul>
+                    </div>
+
+                    <div class="setup-section">
+                        <h3>Troubleshooting</h3>
+                        <div class="troubleshooting-item">
+                            <h4>❌ "Connection refused" error</h4>
+                            <p>Make sure the Python engine is running on port 8888. Check that no other application is using this port.</p>
+                        </div>
+                        <div class="troubleshooting-item">
+                            <h4>❌ "Not enough data to learn yet"</h4>
+                            <p>The system needs at least 50 trades to start learning. Keep trading until you accumulate enough history.</p>
+                        </div>
+                        <div class="troubleshooting-item">
+                            <h4>❌ EA not executing trades</h4>
+                            <p>Verify that "Allow automated trading" is enabled in MT5 Options and that the AI confidence score is above the threshold.</p>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <strong>💡 Pro Tip:</strong>
+                        <p>The more trades you accumulate, the smarter the AI becomes. Consider running the system continuously for best results!</p>
+                    </div>
+
+                    <div class="checklist">
+                        <h3>Final Checklist</h3>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>System is running and connected</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Trade history is being recorded</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>AI model is updating regularly</span>
+                        </label>
+                        <label class="checkbox-item">
+                            <input type="checkbox" onchange="updateProgress()">
+                            <span>Strategy parameters are improving</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="step-navigation">
+                    <button class="btn btn-secondary" onclick="previousStep()">← Previous</button>
+                    <button class="btn btn-primary" onclick="completeSetup()">✓ Complete Setup</button>
+                </div>
+            </section>
+        </main>
+
+        <!-- Completion Modal -->
+        <div class="modal" id="completionModal">
+            <div class="modal-content">
+                <h2>🎉 Setup Complete!</h2>
+                <p>Your MT5 AI Self-Learning System is now configured and ready to use.</p>
+                <div class="completion-summary">
+                    <p>✓ Python environment configured</p>
+                    <p>✓ MT5 Expert Advisor compiled</p>
+                    <p>✓ System connected and learning</p>
+                </div>
+                <p class="modal-footer">The AI will continue to improve with every trade. Good luck with your automated trading!</p>
+                <button class="btn btn-primary" onclick="closeModal()">Start Trading</button>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>&copy; 2026 MT5 AI Self-Learning System | Powered by Manus AI</p>
+            <p class="footer-links">
+                <a href="#" onclick="scrollToStep(1)">Documentation</a> | 
+                <a href="#" onclick="alert('Support: contact@manus.im')">Support</a> | 
+                <a href="#" onclick="alert('Version 1.0')">About</a>
+            </p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
