@@ -1,0 +1,363 @@
+System Output Overview:
+1. Startup Sequence (Console Output)
+When you launch the system, the "Brain" performs a self-check. Depending on whether it finds a saved state, you will see one of these distinct headers:
+Scenario
+Console Header Output
+Successful Resume (Main Model)
+========== AI BRAIN STARTUP: RESUMING MEMORY ==========  
+[+] Source: ./ai_models/tta_model.joblib  
+[+] Status: SUCCESS - AI Memory Restored  
+==================================================
+Successful Resume (DNA Backup)
+========== AI BRAIN STARTUP: RESUMING MEMORY ==========  
+[+] Status: RESTORING FROM DNA BACKUP (model_peak_PF_1.8.joblib)  
+==================================================
+First Run / Fresh Start
+========== AI BRAIN STARTUP: FIRST RUN / FRESH START ==========  
+[+] Status: INITIALIZING FRESH AI STATE  
+==================================================
+Memory Corrupted (Main Model)
+!!!!!!!!!! AI BRAIN STARTUP: MEMORY CORRUPTED !!!!!!!!!!  
+[!] Error: [Error Details]  
+[!] Action: STARTING FRESH (Memory Reset)  
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+2. Live KPI Dashboard (Console & UI)
+Every time the system receives new data or refreshes (every few seconds), it prints a comprehensive report to your terminal and updates the chart overlay. The Lifetime Win-Rate, Recent Win-Rate (50), Min Pip Gain, Max Pip Loss, Max Trade Duration, and Learning Status are now explicitly included.
+Terminal Report Example:
+      AI TRADING SYSTEM KPI REPORT (LIVE)
+[+] Session Uptime:       0:45:12 [+] Cumulative Brain Age: 1,248 Setups [+] Lifetime Win-Rate:  68.45% [+] Recent Win-Rate (50): 72.10% [+] Min Pip Gain (Wins):  5.30 [+] Max Pip Loss (Losses): -25.50 [+] Profit Factor:        1.47 [+] Max Trade Duration:  24 Bars [+] Learning Status:     EVOLVING (+3.6%) [+] Tuning Confidence:    95% (STRICT_MODE: ON)
+Graphical UI Overlay (Bottom Left of Chart):
+The chart itself will show a concise, light-gray text line that updates in real-time, now including the learning status, minimum pip gain, maximum pip loss, and max hold duration:
+Brain: 1248 Setups | EVOLVING (+3.6%) | Win(L/R): 68.4%/72.1% | MinG: 5.3 | MaxL: -25.5 | MaxHold: 24 Bars | PF: 1.47
+3. Graceful Shutdown (Console Output)
+When you click the red STOP button in the UI or press Ctrl+C, the system ensures nothing is lost. If the AI has achieved a new performance peak, a DNA Backup will be created.
+>>> STOP button clicked. Initiating graceful shutdown...
+>>> Initiating final shutdown sequence...
+>>> AI Model saved to ./ai_models/tta_model.joblib
+>>> DNA BACKUP LOCKED: ./ai_models/backups/model_peak_PF_1.47_1678886400.joblib
+>>> TTA AI Server stopped.
+>>> System gracefully shut down.
+4. MT5 Console Output (Trade Execution & Safety Close)
+Trade Execution with Dynamic Max Hold:
+When the AI triggers a trade, it will now explicitly state the dynamic Max Hold value for that specific trade:
+>>> AI TRADE EXECUTED: BUY | Confidence: 0.9750 | Max Hold: 15 bars
+Maximum Time Close (Logged as Loss):
+If a live trade exceeds its dynamically set Max Hold duration, it will be automatically closed and explicitly logged as a loss for AI learning. You will see a message like this in your MT5 Experts tab:
+>>> SAFETY CLOSE: Max Hold 15 bars reached. Closing as LOSS for AI learning.
+
+Keep developing self-learning MT5 trading system for you. 
+This system integrates your MT5 Expert Advisor with a Python-based AI engine that 
+continuously learns and improves its strategy based on historical trade data.
+
+Using: Multi TF mapping for 7-sets strategy for M15, H1, H4, M15 as entry
+Entry on SnR / Supply n Demand zone only for higher TF such as M15, M30, H1, H4, D1, W1, M15
+Always look for 7th set and the key candle for rejection to determine the end of set-7, with the support of
+higher TF structure first!
+Analyse the 4 types of TL, 3 channel with multi TF mapping, identify the TP1 at M15, Tp2 at M30,
+TP3 at H1, Tp4 at H4, TP5 at D1 ...
+Always have weight for higher TF indicators. those indicators all are from MT5 only, no other add on except 
+agreed upon. Only top up new strategy and flow, keep the ori and buttons as it is with top up only.
+
+develope the "Protected Self-Evolving" version of your MT5 trading system. This architecture ensures that while the AI autonomously evolves its "brain" and "skills" to create new versions of itself, it strictly preserves and protects your original EA logic and manual buttons.
+The system now features:
+Protected Evolution Engine: The new EvolutionManager uses a "Top-Up Only" approach, adding new evolved rules and adjusting AI-specific parameters (like Inp_MinPips) without ever touching your original button handlers (BTN_MAIN_TRENDLINE, BTN_MAIN_DUP, etc.) or core manual functions.
+Permanent Memory & Sync: The system maintains a trade_history.csv database and uses last_sync_time to automatically identify and "backfill" any trades missed during downtime, ensuring 100% data continuity.
+Iterative Historical Re-Learning: The AI brain periodically re-processes its entire historical dataset with its latest "evolved skills," refining its predictive accuracy again and again.
+Version-Controlled History: Every new generation (v1.0, v1.1, v2.0) is backed up in the evolution_history directory, with built-in verification to ensure your original manual interface is always intact.
+
+MT5 Self-Evolving AI Engine: Consolidated Implementation
+
+The entire AI self-learning, gap detection, and protected evolution logic has been consolidated into a single, high-performance Python script: tta_ai_engine.py. This script is designed to work directly with your test2.mq5 Expert Advisor and strategy.txt requirements.
+
+Consolidated AI Engine Features
+
+Feature
+Implementation Detail
+Single-File Logic
+tta_ai_engine.py contains all the AI brain, model persistence, and evolution logic, making it easy to manage and deploy.
+Protected Evolution
+The AI autonomously updates AI-specific parameters (like Inp_MinPips) and EA versioning while strictly preserving your original manual buttons and logic.
+Gap Detection & Backfill
+The script tracks last_sync_time to automatically identify and process any trades missed during downtime, ensuring 100% data continuity.
+Iterative Re-Learning
+The AI brain periodically re-processes the entire historical dataset (trade_history.csv) with its latest "evolved skills" to refine accuracy.
+Live KPI Dashboard
+A real-time console report displays Version, Win-Rate, Profit Factor, and Brain Age, reflecting the system's continuous improvement.
+
+
+
+
+Core System Workflow
+
+1.
+Startup: Run python tta_ai_engine.py. The script loads the latest model and sync time.
+
+2.
+EA Sync: Your test2.mq5 connects via socket to synchronize any missing trades from the last downtime.
+
+3.
+Live Operation: The AI predicts trade setups and records outcomes in real-time, learning from every success and failure.
+
+4.
+Skill Milestone: Upon reaching a Profit Factor milestone (+0.1), the AI triggers a "Protected Evolution," updating the EA's AI settings and creating a backup.
+
+5.
+Continuous Improvement: The AI background thread periodically re-evaluates all historical data to upgrade its skills again and again.
+
+Usage Instructions
+
+•
+Python Environment: Ensure you have scikit-learn, pandas, numpy, and joblib installed.
+
+•
+Run: Execute python tta_ai_engine.py to start the AI engine.
+
+•
+EA Integration: Ensure test2.mq5 is configured to communicate with the local socket server on port 8888.
+
+This consolidated script provides a robust, self-evolving, and permanent "AI Brain" for your MT5 trading system, strictly respecting your original manual expertise.
+
+MT5 Self-Learning Trading System Architecture Design
+
+1. Introduction
+
+This document outlines the architecture for a Python-based self-learning trading system integrated with MetaTrader 5 (MT5). The system aims to implement a sophisticated 7-set trading strategy, incorporating multi-timeframe analysis, AI-driven learning, and robust trade management.
+
+2. System Components
+
+The system will be composed of several interconnected modules, each responsible for a specific set of functionalities. The primary components include:
+
+•
+MT5 Data Connector: Handles communication with the MT5 terminal, fetching historical and real-time market data, and executing trades.
+
+•
+Data Preprocessing & Feature Engineering: Transforms raw MT5 data into features suitable for AI model input, including multi-timeframe (MTF) mapping, SnR/Supply-Demand zone identification, and TrendLine/Channel detection.
+
+•
+AI Brain (Learning & Prediction Engine): The core self-learning component responsible for analyzing market patterns, identifying trade opportunities based on the 7-set strategy, and making trade decisions. It includes mechanisms for model persistence and continuous improvement.
+
+•
+Strategy Engine (7-Set Pattern Detector): Implements the specific logic for identifying the 7-set pattern, key candle rejections, and higher timeframe structure confirmation.
+
+•
+Trade Execution & Management: Manages trade entry, setting Take Profit (TP) levels across multiple timeframes, implementing dynamic Max Hold, and executing safety closes.
+
+•
+KPI Dashboard & Logging: Provides real-time performance metrics (KPIs) to the console and potentially a UI overlay, along with comprehensive logging of system activities and trade events.
+
+•
+System Orchestrator: The main control unit that manages the flow of data, coordinates between modules, handles startup/shutdown sequences, and oversees the overall system operation.
+
+3. Data Flow and Interactions
+
+mermaid
+
+Source
+
+
+Failed to render mermaid:
+Parse error on line 4:
+...   C --> D[AI Brain (Learning & Predicti
+-----------------------^
+Expecting 'SQE', 'DOUBLECIRCLEEND', 'PE', '-)', 'STADIUMEND', 'SUBROUTINEEND', 'PIPE', 'CYLINDEREND', 'DIAMOND_STOP', 'TAGEND', 'TRAPEND', 'INVTRAPEND', 'UNICODE_TEXT', 'TEXT', 'TAGSTART', got 'PS'
+
+
+Ask Manus to fix
+Explanation of Data Flow:
+
+1.
+MT5 Terminal provides raw market data to the MT5 Data Connector.
+
+2.
+The MT5 Data Connector fetches data and sends trade commands to the MT5 Terminal.
+
+3.
+Raw data from the connector is passed to Data Preprocessing & Feature Engineering.
+
+4.
+Processed data and features are fed into both the AI Brain and the Strategy Engine.
+
+5.
+The AI Brain makes predictions and learns from trade outcomes.
+
+6.
+The Strategy Engine identifies specific 7-set patterns and confirmations.
+
+7.
+Both the AI Brain's decisions and the Strategy Engine's signals inform the Trade Execution & Management module.
+
+8.
+Trade Execution & Management sends trade commands back to the MT5 Data Connector for execution and logs trade details.
+
+9.
+All key events and performance metrics are sent to the KPI Dashboard & Logging module.
+
+10.
+The System Orchestrator initiates and controls all other modules, including startup, shutdown, and overall coordination.
+
+4. Detailed Module Breakdown
+
+4.1. MT5 Data Connector
+
+•
+Technology: MetaTrader5 Python library.
+
+•
+Functions:
+
+•
+Connect/disconnect to MT5 terminal.
+
+•
+Fetch historical bar data for multiple symbols and timeframes (M15, M30, H1, H4, D1, W1).
+
+•
+Fetch real-time tick data.
+
+•
+Place, modify, and close orders.
+
+•
+Retrieve open positions and pending orders.
+
+•
+Monitor account information.
+
+
+
+4.2. Data Preprocessing & Feature Engineering
+
+•
+Functions:
+
+•
+Multi-Timeframe (MTF) Mapping: Consolidate data from different timeframes.
+
+•
+SnR / Supply-Demand Zone Identification: Algorithms to detect significant support and resistance levels and supply/demand zones on higher timeframes (M15, M30, H1, H4, D1, W1).
+
+•
+TrendLine (TL) & Channel Detection: Algorithms to identify 4 types of trendlines and 3 types of channels across multiple timeframes.
+
+•
+Indicator Calculation: Integrate MT5-native indicators, giving higher weight to higher timeframe indicators.
+
+
+
+4.3. AI Brain (Learning & Prediction Engine)
+
+•
+Technology: scikit-learn or TensorFlow/PyTorch (depending on complexity).
+
+•
+Functions:
+
+•
+Model Training: Continuously train and retrain the AI model based on historical and live trade data.
+
+•
+Prediction: Generate trade signals (BUY/SELL/HOLD) based on processed market features.
+
+•
+Model Persistence: Save and load AI model states (.joblib files) for resuming memory, including DNA backups for peak performance models.
+
+•
+Self-Check & State Management: Handle scenarios like successful resume, first run, and memory corruption.
+
+•
+Learning Status: Track and report learning progress (e.g., EVOLVING (+3.6%)).
+
+
+
+4.4. Strategy Engine (7-Set Pattern Detector)
+
+•
+Functions:
+
+•
+7-Set Pattern Recognition: Identify the specific 7-set candlestick patterns.
+
+•
+Key Candle Rejection: Detect key candle rejections that signify the end of a 7-set.
+
+•
+Higher Timeframe Structure Confirmation: Confirm patterns and signals using higher timeframe analysis (e.g., M15, M30, H1, H4, D1, W1).
+
+
+
+4.5. Trade Execution & Management
+
+•
+Functions:
+
+•
+Dynamic Max Hold: Calculate and apply a dynamic maximum holding period for each trade.
+
+•
+Take Profit (TP) Levels: Set multiple TP levels based on different timeframes (TP1@M15, TP2@M30, TP3@H1, TP4@H4, TP5@D1).
+
+•
+Stop Loss (SL) Management: Implement appropriate stop-loss mechanisms.
+
+•
+Safety Close: Automatically close trades that exceed their Max Hold duration, logging them as losses for AI learning.
+
+•
+Trade Confidence: Incorporate AI confidence levels into trade execution decisions.
+
+
+
+4.6. KPI Dashboard & Logging
+
+•
+Functions:
+
+•
+Console Reporting: Print real-time KPI reports to the terminal.
+
+•
+UI Overlay (Placeholder): Design for a concise UI overlay on the MT5 chart (requires MT5 Expert Advisor integration for display).
+
+•
+Metrics Calculation: Calculate and update Session Uptime, Cumulative Brain Age, Win-Rates, Min/Max Pip Gain/Loss, Profit Factor, Max Trade Duration, Learning Status, and Tuning Confidence.
+
+•
+Event Logging: Log all significant system events, trade executions, and safety closes.
+
+
+
+4.7. System Orchestrator
+
+•
+Functions:
+
+•
+Initialization: Handle system startup, including AI model loading (resume, DNA backup, fresh start, memory reset).
+
+•
+Main Loop: Coordinate data fetching, processing, signal generation, trade execution, and KPI updates in a continuous loop.
+
+•
+Graceful Shutdown: Implement a controlled shutdown sequence, ensuring model saving and DNA backup if applicable.
+
+•
+Error Handling: Manage exceptions and system errors.
+
+
+
+5. Future Considerations
+
+•
+User Interface (UI): While a console and basic chart overlay are planned, a more comprehensive UI for visualization and control could be developed.
+
+•
+External API Integrations: Explore integrations with other data sources or services if needed.
+
+•
+Scalability: Design for potential scaling to multiple trading accounts or instruments.
+
+6. Conclusion
+
+This architecture provides a robust framework for developing the self-learning MT5 trading system. The modular design allows for independent development and testing of components, facilitating a structured and efficient implementation process. The integration of AI learning with a specific trading strategy and comprehensive trade management aims to create an adaptive and high-performing trading solution.
+
+auto trigger the test2.mq5 to explore on every custom strategy.
