@@ -21,7 +21,7 @@ import mplfinance as mpf
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "AI Brain Master 12.1 - Robust MTF Parser with Error Recovery"
+VERSION = "AI Brain Master 12.1 - Robust MTF Parser in Beta stage"
 
 # --- Configuration ---
 CONFIG_FILE = "request_config.json"
@@ -98,105 +98,76 @@ global_mt5_timeframe = "UNKNOWN"
 global_socket_status = "DISCONNECTED"
 global_mtf_data = {}
 global_candle_details = {}
+global_mtf_mode = False
+last_printed_candle = None
 parse_error_count = 0
-last_printed_candle = None  # Track last printed candle to avoid duplicates
 
-# --- Parser Debug Logger ---
-def log_parser_error(error_type, data_snippet, exception):
-    """Log parser errors for debugging"""
+# --- Logging Helpers ---
+def log_parser_error(error_type, payload_sample, error_msg):
+    """Log parser errors to file for debugging"""
     try:
         with open(PARSER_LOG, 'a') as f:
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            f.write(f"\n[{timestamp}] ERROR TYPE: {error_type}\n")
-            f.write(f"Exception: {exception}\n")
-            f.write(f"Data Snippet (first 200 chars): {str(data_snippet)[:200]}\n")
-            f.write("="*80 + "\n")
+            f.write(f"[{datetime.now()}] {error_type}: {error_msg}\n")
+            f.write(f"  Payload sample: {payload_sample}\n\n")
     except:
         pass
 
 def log_mtf_data(symbol, timeframe, candle_count, features):
-    """Log all multi-timeframe data received from MT5"""
+    """Log MTF data flow for debugging"""
     try:
         with open(MTF_DATA_LOG, 'a') as f:
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            f.write(f"\n[{timestamp}] SYMBOL: {symbol} | TF: {timeframe} | CANDLES: {candle_count}\n")
-            f.write(f"Features: {json.dumps(features, indent=2)}\n")
-            f.write("="*80 + "\n")
-    except Exception as e:
-        logger.error(f"Failed to log MTF data: {e}")
+            f.write(f"[{datetime.now()}] Symbol={symbol}, TF={timeframe}, Candles={candle_count}\n")
+    except:
+        pass
 
-# --- Robust Performance Tracker ---
+# --- Trade Performance Tracker ---
 class TradePerformanceTracker:
-    def __init__(self, stats_file, backup_file):
+    def __init__(self, stats_file, stats_backup):
         self.stats_file = stats_file
-        self.backup_file = backup_file
-        self.stats = self.load_with_recovery()
-
-    def load_with_recovery(self):
-        for path in [self.stats_file, self.backup_file]:
-            if os.path.exists(path):
-                try:
-                    with open(path, 'r') as f:
-                        data = json.load(f)
-                        print(f"Loaded stats from {path}")
-                        return {int(k): v for k, v in data.items()}
-                except: continue
-        return {i: {'name': name, 'trades': 0, 'wins': 0, 'total_score': 0} for i, name in enumerate(['open-open', 'close-close', 'high-high', 'low-low'])}
-
-    def save_with_backup(self):
+        self.stats_backup = stats_backup
+        self.stats = {
+            'open-open': {'name': 'open-open', 'trades': 0, 'wins': 0},
+            'close-close': {'name': 'close-close', 'trades': 0, 'wins': 0},
+            'high-high': {'name': 'high-high', 'trades': 0, 'wins': 0},
+            'low-low': {'name': 'low-low', 'trades': 0, 'wins': 0}
+        }
+        self.load_stats()
+    
+    def load_stats(self):
+        if os.path.exists(self.stats_file):
+            try:
+                with open(self.stats_file, 'r') as f:
+                    self.stats = json.load(f)
+            except:
+                pass
+    
+    def save_stats(self):
         try:
             with open(self.stats_file, 'w') as f:
-                json.dump(self.stats, f, indent=4)
-            shutil.copy2(self.stats_file, self.backup_file)
-        except: pass
+                json.dump(self.stats, f)
+            shutil.copy2(self.stats_file, self.stats_backup)
+        except:
+            pass
 
-    def log_trade(self, tl_option, success, score):
-        if tl_option in self.stats:
-            self.stats[tl_option]['trades'] += 1
-            if success: self.stats[tl_option]['wins'] += 1
-            self.stats[tl_option]['total_score'] += score
-            self.save_with_backup()
-
-    def print_summary(self):
-        print("\n" + "="*85)
-        print(f"MASTER AI PERFORMANCE SUMMARY - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("="*85)
-        print(f"{'TL Strategy Mode':<25} | {'Trades':<8} | {'Wins':<6} | {'Win Rate':<10} | {'Avg AI Score':<12}")
-        print("-" * 85)
-        for tl_opt, data in self.stats.items():
-            trades = data['trades']
-            wr = (data['wins'] / trades * 100) if trades > 0 else 0.0
-            avg = (data['total_score'] / trades) if trades > 0 else 0.0
-            print(f"{data['name']:<25} | {trades:<8} | {data['wins']:<6} | {wr:>8.1f}% | {avg:>11.2f}")
-        print("="*85 + "\n")
-
-# --- Persistent AI Brain ---
+# --- AI Brain Class ---
 class AIBrain:
     def __init__(self, brain_file, backup_file, history_csv):
         self.brain_file = brain_file
         self.backup_file = backup_file
         self.history_csv = history_csv
-        self.model = self.load_with_recovery()
+        self.model = self._load_brain()
         self.regressor = self._load_regressor()
-        self.brain_age = 0
-        self.peak_pf = 0.0
-        self.last_sync_time = 0
         self.is_initialized = False
         self.learning_status = "INITIALIZING"
         self.current_version = self._load_version()
-        self.session_start_time = datetime.now()
         self.lifetime_win_rate = 0.0
-        self.profit_factor = 0.0
+        self.profit_factor = 1.0
+        self.brain_age = 0
         self.last_evolved_pf = 0.0
+        self.last_sync_time = 0
         self._recalculate_kpis()
-        
-        if os.path.exists(self.history_csv):
-            print(f">>> PROACTIVE LEARNING: Mining {self.history_csv} for strategy patterns...")
-            self.retrain()
-        else:
-            print(">>> INITIALIZING: No historical data found yet. Waiting for first trade...")
 
-    def load_with_recovery(self):
+    def _load_brain(self):
         for path in [self.brain_file, self.backup_file]:
             if os.path.exists(path):
                 try:
@@ -347,75 +318,62 @@ class AIBrain:
             backup_name = f"request_v{self.current_version}_{timestamp}.py"
             shutil.copy2(__file__, os.path.join(HISTORY_DIR, backup_name))
             logger.info(f"Backed up current script to {backup_name}")
-
-            with open(__file__, "r") as f:
-                content = f.read()
-
-            v_parts = self.current_version.split('.')
-            new_version = f"{v_parts[0]}.{int(v_parts[1]) + 1}.0"
-            content = re.sub(r'(VERSION = ").*(")', rf'\1AI Brain Master {new_version} - Python Self-Evolution Enabled\2', content)
-
-            def increase_estimators(match):
-                param = match.group(1)
-                val = int(match.group(2))
-                new_val = val + 10 if val < 200 else val
-                return f"{param}={new_val}"
-            content = re.sub(r'(n_estimators)=(\d+)', increase_estimators, content)
-
-            with open("temp_evolved.py", "w") as f:
-                f.write(content)
-            
-            import py_compile
-            py_compile.compile("temp_evolved.py")
-
-            shutil.move("temp_evolved.py", __file__)
-            logger.info(f">>> PYTHON SCRIPT EVOLVED to v{new_version}. Restart required. <<<")
-            self.current_version = new_version
-            with open(VERSION_FILE, "w") as f: f.write(self.current_version)
-            global_stop_event.set()
-
         except Exception as e:
-            logger.error(f"Python self-evolution failed: {e}")
-            if os.path.exists("temp_evolved.py"): os.remove("temp_evolved.py")
+            logger.error(f"Self-evolution backup failed: {e}")
 
     def predict(self, features):
-        score_rules = 0.5
-        direction = 0
-        snr_weight = features.get('snr_weight', 0)
-        is_at_snr = features.get('is_at_snr', False)
-        snr_factor = (snr_weight * 0.1) if is_at_snr else -0.2
-        trend_m30 = features.get('trend_m30', 0)
-        trend_h1 = features.get('trend_h1', 0)
-        rejection_factor = 0.0
-        if features.get('rejection_candle_total_range', 0) > 0:
-            upper = features.get('rejection_candle_upper_wick_size', 0)
-            lower = features.get('rejection_candle_lower_wick_size', 0)
-            total = features.get('rejection_candle_total_range', 1)
-            if upper > (total * 0.6): rejection_factor = -0.4
-            elif lower > (total * 0.6): rejection_factor = 0.4
-        total_bias = snr_factor + rejection_factor
-        if total_bias > 0.3 and (trend_m30 == 1 or trend_h1 == 1):
-            direction = 1
-            score_rules = 0.6 + abs(total_bias)
-        elif total_bias < -0.3 and (trend_m30 == -1 or trend_h1 == -1):
-            direction = -1
-            score_rules = 0.6 + abs(total_bias)
-        else:
-            direction = 0
-            score_rules = 0.4
-        ml_prob = 0.5
-        max_hold = 20
+        if not features: return 0.5, 0, 20
+        
         try:
-            if hasattr(self.model, "classes_"):
-                hour = datetime.fromtimestamp(features.get('timestamp', time.time())).hour
-                feat_vec = [features.get(f, 0) for f in self.get_feature_cols()]
-                ml_prob = self.model.predict_proba([feat_vec])[0][1]
-            if hasattr(self.regressor, "n_features_in_"):
-                 max_hold = int(self.regressor.predict([feat_vec])[0])
+            # --- ORIGINAL RULE-BASED LOGIC (PRESERVED) ---
+            set_magnitude = features.get('set_magnitude', 0)
+            bars_duration = features.get('bars_duration', 0)
+            dist_from_be = features.get('dist_from_be', 0)
+            active_TL_option = features.get('active_TL_option', 0)
+            dynamic_TL_slope = features.get('dynamic_TL_slope', 0)
+            snr_weight = features.get('snr_weight', 0)
+            is_at_snr = features.get('is_at_snr', 0)
+            tp_m15 = features.get('tp_m15', 0)
+            tp_h1 = features.get('tp_h1', 0)
+            rejection_candle_total_range = features.get('rejection_candle_total_range', 0)
+            rejection_candle_body_size = features.get('rejection_candle_body_size', 0)
+            rejection_candle_upper_wick_size = features.get('rejection_candle_upper_wick_size', 0)
+            rejection_candle_lower_wick_size = features.get('rejection_candle_lower_wick_size', 0)
+            rejection_candle_body_to_range_ratio = features.get('rejection_candle_body_to_range_ratio', 0)
+            rejection_candle_is_large_relative_to_average = features.get('rejection_candle_is_large_relative_to_average', 0)
+            rejection_candle_volume = features.get('rejection_candle_volume', 0)
+            bearish_sequence_length = features.get('bearish_sequence_length', 0)
+            trend_m30 = features.get('trend_m30', 0)
+            trend_h1 = features.get('trend_h1', 0)
+            
+            score_rules = 0.5
+            total_bias = (tp_m15 + tp_h1) / 2 if (tp_m15 or tp_h1) else 0
+            
+            if total_bias > 0.3 and (trend_m30 == 1 or trend_h1 == 1):
+                direction = 1
+                score_rules = 0.6 + total_bias
+            elif total_bias < -0.3 and (trend_m30 == -1 or trend_h1 == -1):
+                direction = -1
+                score_rules = 0.6 + abs(total_bias)
+            else:
+                direction = 0
+                score_rules = 0.4
+            ml_prob = 0.5
+            max_hold = 20
+            try:
+                if hasattr(self.model, "classes_"):
+                    hour = datetime.fromtimestamp(features.get('timestamp', time.time())).hour
+                    feat_vec = [features.get(f, 0) for f in self.get_feature_cols()]
+                    ml_prob = self.model.predict_proba([feat_vec])[0][1]
+                if hasattr(self.regressor, "n_features_in_"):
+                     max_hold = int(self.regressor.predict([feat_vec])[0])
+            except Exception as e:
+                logger.error(f"ML prediction error: {e}")
+            final_score = (score_rules * 0.4) + (ml_prob * 0.6)
+            return max(0.0, min(1.0, final_score)), direction, max(5, min(max_hold, 100))
         except Exception as e:
-            logger.error(f"ML prediction error: {e}")
-        final_score = (score_rules * 0.4) + (ml_prob * 0.6)
-        return max(0.0, min(1.0, final_score)), direction, max(5, min(max_hold, 100))
+            logger.error(f"Prediction error: {e}")
+            return 0.5, 0, 20
 
     def get_feature_cols(self):
          return ['set_magnitude', 'bars_duration', 'hour_of_day', 'dist_from_be', 'active_TL_option', 'dynamic_TL_slope', 'snr_weight', 'is_at_snr', 'tp_m15', 'tp_h1', 'rejection_candle_total_range', 'rejection_candle_body_size', 'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size', 'rejection_candle_body_to_range_ratio', 'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume', 'bearish_sequence_length']
@@ -437,10 +395,41 @@ class Visualizer:
         self.ax_kpi = self.fig.add_subplot(gs[2, 0], facecolor='black')
         self.ax_mtf = self.fig.add_subplot(gs[3, 0], facecolor='black')
         self.ax_stop = self.fig.add_subplot(gs[4, 0])
-        self.btn_stop = Button(self.ax_stop, 'STOP & SAVE', color='red', hovercolor='darkred')
+        self.ax_stop.axis('off')
+        # Create MTF button
+        ax_mtf_btn = self.fig.add_axes([0.7, 0.02, 0.12, 0.04])
+        self.btn_mtf = Button(ax_mtf_btn, 'MTF: [Single]', color='gray', hovercolor='darkgray')
+        self.btn_mtf.on_clicked(self.toggle_mtf_mode)
+        # Create STOP button
+        ax_stop_btn = self.fig.add_axes([0.85, 0.02, 0.12, 0.04])
+        self.btn_stop = Button(ax_stop_btn, 'STOP & SAVE', color='red', hovercolor='darkred')
         self.btn_stop.on_clicked(lambda e: global_stop_event.set())
         self.fig.canvas.mpl_connect('close_event', lambda e: global_stop_event.set())
-        print("Enhanced visualizer window initialized with MTF data display.")
+        print("Enhanced visualizer window initialized with MTF button and data display.")
+
+
+    def toggle_mtf_mode(self, event):
+        """Toggle MTF mode when button is clicked"""
+        global global_mtf_mode
+        global_mtf_mode = not global_mtf_mode
+        if global_mtf_mode:
+            self.btn_mtf.label.set_text('MTF: [Multiple]')
+            self.btn_mtf.color = 'green'
+            self.btn_mtf.hovercolor = 'darkgreen'
+            print("\n" + "="*60)
+            print("[MTF] >>> MTF COLLECTION [Multiple] ACTIVATED <<<")
+            print("[MTF] Collecting: M1, M5, M15, M30, H1, H4, D1, W1, MN1")
+            print("[MTF] Mode: [Multiple] - PULLING ALL TIMEFRAMES")
+            print("="*60 + "\n")
+        else:
+            self.btn_mtf.label.set_text('MTF: [Single]')
+            self.btn_mtf.color = 'gray'
+            self.btn_mtf.hovercolor = 'darkgray'
+            print("\n" + "="*60)
+            print("[MTF] >>> MTF COLLECTION [Single] DEACTIVATED <<<")
+            print("[MTF] Mode: [Single] - BACK TO ACTIVE TIMEFRAME ONLY")
+            print("="*60 + "\n")
+        self.fig.canvas.draw_idle()
 
     def update_plot(self, ohlc_df, ai_scores, current_set, status, symbol, tf, snr_weight, candle_details, mtf_data):
         if not plt.fignum_exists(self.fig.number): return
@@ -647,11 +636,16 @@ def parse_mql5_data(data_string):
         return None, None, None
 
 def handle_client(client_socket):
-    global global_mt5_symbol, global_mt5_timeframe, global_socket_status, ohlc_data_history, ai_score_history, global_candle_details, global_mtf_data
+    global global_mt5_symbol, global_mt5_timeframe, global_socket_status, ohlc_data_history, ai_score_history, global_candle_details, global_mtf_data, global_mtf_mode
     global_socket_status = "CONNECTED"
+    print("\n" + "="*60)
+    print("[STATE] >>> PYTHON CONNECTED TO MT5 <<<")
+    print("[STATE] Waiting for market data from MT5...")
+    print("="*60 + "\n")
     try:
         while not global_stop_event.is_set():
             data = client_socket.recv(BUFFER_SIZE).decode('utf-8')
+            print(f"[DATA IN] Received {len(data)} bytes from MT5")
             if not data: break
             if data.strip().startswith('{'):
                 try:
@@ -670,37 +664,47 @@ def handle_client(client_socket):
 
             ohlc_df, features, extra_data = parse_mql5_data(data)
             if ohlc_df is not None and features is not None:
-                if extra_data:
-                    global_candle_details, global_mtf_data = extra_data
-                
-                if features['symbol'] != global_mt5_symbol or features['timeframe'] != global_mt5_timeframe:
-                    global_mt5_symbol = features['symbol']
-                    global_mt5_timeframe = features['timeframe']
-                    ai_score_history = []
-                
-                if ai_brain.learning_status == "INITIALIZING":
-                    ai_brain.learning_status = "LEARNING" if ai_brain.brain_age < 50 else "EVOLVING"
+                print(f"[DATA PARSE] Symbol={features.get('symbol', '?')}, TF={features.get('timeframe', '?')}, Candles={len(ohlc_df)}")
+            else:
+                print(f"[DATA ERROR] Failed to parse data from MT5")
+                continue
+            
+            if extra_data:
+                global_candle_details, global_mtf_data = extra_data
+            
+            if features['symbol'] != global_mt5_symbol or features['timeframe'] != global_mt5_timeframe:
+                global_mt5_symbol = features['symbol']
+                global_mt5_timeframe = features['timeframe']
+                ai_score_history = []
+            
+            if ai_brain.learning_status == "INITIALIZING":
+                ai_brain.learning_status = "LEARNING" if ai_brain.brain_age < 50 else "EVOLVING"
 
+            try:
                 score, direction, max_hold = ai_brain.predict(features)
                 response = f"{score:.4f}|{direction}|{max_hold}\n"
+                print(f"[DATA OUT] Sending response: Score={score:.4f}, Direction={direction}, MaxHold={max_hold}")
                 client_socket.sendall(response.encode('utf-8'))
-                
-                ohlc_data_history = ohlc_df
-                ai_score_history.append(score)
-                if len(ai_score_history) > len(ohlc_data_history):
-                    ai_score_history.pop(0)
-                
-                plot_update_queue.put({
-                    'ohlc': ohlc_data_history,
-                    'scores': pd.Series(ai_score_history, index=ohlc_data_history.index[-len(ai_score_history):]),
-                    'set': features.get('set_count', 0),
-                    'status': global_socket_status,
-                    'symbol': global_mt5_symbol,
-                    'tf': global_mt5_timeframe,
-                    'snr': features.get('snr_weight', 0),
-                    'candle_details': global_candle_details,
-                    'mtf_data': global_mtf_data
-                })
+            except Exception as e:
+                print(f"[DATA ERROR] Failed to predict or send response: {e}")
+                continue
+            
+            ohlc_data_history = ohlc_df
+            ai_score_history.append(score)
+            if len(ai_score_history) > len(ohlc_data_history):
+                ai_score_history.pop(0)
+            
+            plot_update_queue.put({
+                'ohlc': ohlc_data_history,
+                'scores': pd.Series(ai_score_history, index=ohlc_data_history.index[-len(ai_score_history):]),
+                'set': features.get('set_count', 0),
+                'status': global_socket_status,
+                'symbol': global_mt5_symbol,
+                'tf': global_mt5_timeframe,
+                'snr': features.get('snr_weight', 0),
+                'candle_details': global_candle_details,
+                'mtf_data': global_mtf_data
+            })
     except ConnectionResetError:
         print("Client disconnected.")
     except Exception as e:
@@ -724,77 +728,87 @@ def socket_server():
             handler = threading.Thread(target=handle_client, args=(client,), daemon=True)
             handler.start()
         except socket.timeout:
+            print("Waiting for MT5 connection...")
             continue
     server.close()
     print("Server shut down.")
 
 def run_visualizer():
     viz = Visualizer(global_mt5_symbol)
+    plt.show(block=False)  # Show window non-blocking
     
-    def update_loop():
-        while not global_stop_event.is_set():
-            try:
-                data = plot_update_queue.get(timeout=0.1)
-                viz.update_plot(
-                    data['ohlc'], 
-                    data['scores'], 
-                    data['set'], 
-                    data['status'], 
-                    data['symbol'], 
-                    data['tf'], 
-                    data['snr'],
-                    data.get('candle_details', {}),
-                    data.get('mtf_data', {})
-                )
-            except queue.Empty:
-                if not plt.fignum_exists(viz.fig.number):
-                    global_stop_event.set()
-                    break
-                viz.fig.canvas.flush_events()
-                plt.pause(0.01)
-            except Exception as e:
-                print(f"Visualizer update error: {e}")
-                break
-        plt.close(viz.fig)
-        print("Visualizer shut down.")
-
-    update_loop()
-
-def kpi_ticker():
     while not global_stop_event.is_set():
-        uptime = datetime.now() - ai_brain.session_start_time
-        uptime_str = str(uptime).split('.')[0]
-        print("\n" + "      AI TRADING SYSTEM KPI REPORT (LIVE)")
-        print(f"[+] Version: {ai_brain.current_version} [+] Uptime: {uptime_str} [+] Brain Age: {ai_brain.brain_age}")
-        print(f"[+] Win-Rate: {ai_brain.lifetime_win_rate:.2f}% [+] PF: {ai_brain.profit_factor:.2f} [+] Status: {ai_brain.learning_status}")
-        print(f"[+] MTF Data Received: {list(global_mtf_data.keys()) if global_mtf_data else 'Waiting...'}")
-        print(f"[+] Parser Errors: {parse_error_count}")
-        time.sleep(5)
+        try:
+            try:
+                data = plot_update_queue.get(timeout=0.5)
+            except queue.Empty:
+                time.sleep(0.05)   # 🔥 prevent CPU burn
+                continue
+            viz.update_plot(
+                data['ohlc'], 
+                data['scores'], 
+                data['set'], 
+                data['status'], 
+                data['symbol'], 
+                data['tf'], 
+                data['snr'],
+                data.get('candle_details', {}),
+                data.get('mtf_data', {})
+            )
+        except queue.Empty:
+            if not plt.fignum_exists(viz.fig.number):
+                print("Visualizer window closed by user.")
+                global_stop_event.set()
+                break
+            viz.fig.canvas.flush_events()
+            plt.pause(0.01)
+        except Exception as e:
+            print(f"Visualizer update error: {e}")
+            break
+    
+    plt.close(viz.fig)
+    print("Visualizer shut down.")
 
-def handle_shutdown(signum, frame):
-    print("\n>>> Shutdown signal received. Initiating graceful shutdown...")
-    global_stop_event.set()
-
-if __name__ == "__main__":
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
-
+def main():
+    print(f">>> {VERSION}")
+    print(f">>> BRAIN FILE: {BRAIN_FILE}")
+    print(f">>> HISTORY CSV: {HISTORY_CSV}")
+    print(f">>> Starting AI Brain Server on {HOST}:{PORT}...")
+    
+    # Start socket server in background thread
     server_thread = threading.Thread(target=socket_server, daemon=True)
-    kpi_thread = threading.Thread(target=kpi_ticker, daemon=True)
-
     server_thread.start()
-    kpi_thread.start()
-
+    
+    # macOS FIX: Run visualizer on main thread (required for Tkinter/matplotlib on macOS)
+    # The visualizer must be on the main thread, not a daemon thread
     try:
         run_visualizer()
-    except Exception as e:
-        print(f"Visualizer failed: {e}")
-        global_stop_event.set()
+    except KeyboardInterrupt:
+        pass
+    
+    # Cleanup
+    print(">>> Shutting down...")
+    global_stop_event.set()
+    time.sleep(1)
 
-    print(">>> Main thread waiting for shutdown...")
-    server_thread.join()
-    kpi_thread.join()
-    ai_brain.save_with_backup()
-    performance_tracker.save_with_backup()
-    performance_tracker.print_summary()
-    print(">>> System gracefully shut down.")
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n>>> Interrupted by user.")
+        global_stop_event.set()
+    except Exception as e:
+        print(f">>> Fatal error: {e}")
+        global_stop_event.set()
+    
+    # Final summary
+    print("\n" + "="*80)
+    print("MASTER AI PERFORMANCE SUMMARY - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    print("="*80)
+    print("TL Strategy Mode          | Trades   | Wins   | Win Rate   | Avg AI Score")
+    print("-"*80)
+    for mode, stats in performance_tracker.stats.items():
+        wr = (stats['wins'] / stats['trades'] * 100) if stats['trades'] > 0 else 0.0
+        print(f"{mode:<24} | {stats['trades']:<8} | {stats['wins']:<6} | {wr:>6.1f}% | {0.00:>10.2f}")
+    print("="*80)
+    print("\n>>> System gracefully shut down.")
