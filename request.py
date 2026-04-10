@@ -21,7 +21,7 @@ import mplfinance as mpf
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "AI Brain Master 12.1 - Robust MTF Parser in Beta stage"
+VERSION = "AI Brain Master 12.2 - Robust MTF Parser & Versioned Evolution"
 
 # --- Configuration ---
 CONFIG_FILE = "request_config.json"
@@ -29,7 +29,11 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f:
-                return json.load(f)
+                cfg = json.load(f)
+                # Note: JSON does not allow duplicate keys. If request_config.json has
+                # duplicate "active_symbol" keys, only the LAST value is kept by Python's
+                # json.load. This is expected behavior. Fix the JSON file to avoid confusion.
+                return cfg
         except Exception as e:
             print(f"Error loading config: {e}")
     return {}
@@ -39,6 +43,16 @@ MT5_BASE_PATH = config.get("mt5_path", "/home/ubuntu/upload")
 
 def find_history_file(base_path):
     direct_path = os.path.join(base_path, "MT5_Set_History.csv")
+    
+    # FIX 3a: If the configured mt5_path directory doesn't exist (e.g., running on
+    # a different machine), fall back to the local working directory immediately.
+    dir_part = os.path.dirname(direct_path)
+    if dir_part and not os.path.exists(dir_part):
+        local_path = os.path.abspath("MT5_Set_History.csv")
+        print(f"!!! WARNING: Configured mt5_path '{base_path}' does not exist.")
+        print(f"!!! Falling back to local path: {local_path}")
+        return local_path
+
     if os.path.exists(direct_path):
         return direct_path
     
@@ -101,6 +115,7 @@ global_candle_details = {}
 global_mtf_mode = False
 last_printed_candle = None
 parse_error_count = 0
+last_heartbeat_time = time.time() # NEW: Track last heartbeat
 
 # --- Logging Helpers ---
 def log_parser_error(error_type, payload_sample, error_msg):
@@ -146,8 +161,7 @@ class TradePerformanceTracker:
             with open(self.stats_file, 'w') as f:
                 json.dump(self.stats, f)
             shutil.copy2(self.stats_file, self.stats_backup)
-        except:
-            pass
+        except: pass
 
 # --- AI Brain Class ---
 class AIBrain:
@@ -234,6 +248,16 @@ class AIBrain:
         for k, v in features.items():
             data[f'feat_{k}'] = [float(v)]
         df_new = pd.DataFrame(data)
+        # FIX 3b: Ensure the directory for the history CSV exists before writing
+        history_dir = os.path.dirname(self.history_csv)
+        if history_dir and not os.path.exists(history_dir):
+            try:
+                os.makedirs(history_dir, exist_ok=True)
+                print(f">>> Created history directory: {history_dir}")
+            except Exception as mkdir_err:
+                # If we can't create the directory, fall back to local file
+                self.history_csv = os.path.abspath("MT5_Set_History.csv")
+                logger.warning(f"Cannot write to configured path. Using local: {self.history_csv}")
         df_new.to_csv(self.history_csv, mode='a', index=False, header=not os.path.exists(self.history_csv), encoding='ansi')
         self.brain_age += 1
         self._recalculate_kpis()
@@ -269,50 +293,24 @@ class AIBrain:
                 self.model.fit(X, df[label_col].values, sample_weight=weights)
                 self.is_initialized = True
                 self.learning_status = f"EVOLVING (v{self.current_version})"
-                logger.info(f">>> STRATEGY PATTERNS MEMORIZED: {len(df)} samples.")
+                logger.info(f">>> STRATEGY PATTERNS MEMORIZED: {len(df)} samples. Win Rate: {self.lifetime_win_rate:.2f}%, PF: {self.profit_factor:.2f}")
             
-            if 'bars' in df.columns and label_col in df.columns and len(df[df[label_col] == 1]) > 1:
-                X_win = df[df[label_col] == 1][feature_cols].fillna(0).values
-                y_reg = df[df[label_col] == 1]['bars'].values
-                self.regressor.fit(X_win, y_reg)
-                logger.info(">>> HOLD-TIME PREDICTION OPTIMIZED.")
-                
+            if 'pips' in df.columns:
+                self.regressor.fit(X, df['pips'].values)
+
             self.save_with_backup()
-            self._recalculate_kpis()
+            logger.info(">>> AI Brain and Regressor saved.")
         except Exception as e:
-            logger.error(f"Deep learning failed: {e}")
+            logger.error(f"AI retraining failed: {e}")
 
     def evolve_system(self):
-        logger.info(f"\n>>> EA PERFORMANCE MILESTONE: PF {self.profit_factor:.2f} >>>")
-        try:
-            if not os.path.exists(EA_PATH):
-                logger.warning(f"EA file not found at {EA_PATH}. Skipping evolution.")
-                return
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"test2_v{self.current_version}_{timestamp}.mq5"
-            shutil.copy2(EA_PATH, os.path.join(HISTORY_DIR, backup_name))
-            with open(EA_PATH, "r") as f: content = f.read()
-            new_min_pips = int(200 * (1 + (self.profit_factor - 1) * 0.1))
-            content = re.sub(r'(input int Inp_MinPips = )\d+;', rf'\1{new_min_pips}; // AI EVOLVED', content)
-            v_parts = self.current_version.split('.')
-            v_parts[-1] = str(int(v_parts[-1]) + 1)
-            self.current_version = '.'.join(v_parts)
-            content = re.sub(r'(#define VERSION ").*(")', rf'\1AI EVOLVED v{self.current_version}\2', content)
-            if all(btn in content for btn in ["BTN_MAIN_TRENDLINE", "BTN_MAIN_DUP", "BTN_MAIN_FROZEN"]):
-                with open(EA_PATH, "w") as f: f.write(content)
-                with open(VERSION_FILE, "w") as f: f.write(self.current_version)
-                self.last_evolved_pf = self.profit_factor
-                logger.info(f">>> EA EVOLVED TO v{self.current_version}.")
-            else:
-                logger.error("Evolution aborted: Safety check failed (manual buttons missing).")
-        except Exception as e:
-            logger.error(f"EA Evolution failed: {e}")
-
-        if self.profit_factor > self.last_evolved_pf + 0.2 and self.brain_age > 100:
-            self._self_evolve_python()
-
-    def _self_evolve_python(self):
-        logger.info("\n>>> PYTHON SELF-EVOLUTION INITIATED... >>>")
+        logger.info("\n>>> SYSTEM EVOLUTION TRIGGERED: Profit Factor improved! >>>")
+        # Increment version number
+        major, minor, patch = map(int, self.current_version.split('.'))
+        patch += 1
+        new_version = f"{major}.{minor}.{patch}"
+        
+        # Backup current Python script with version
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_name = f"request_v{self.current_version}_{timestamp}.py"
@@ -320,6 +318,38 @@ class AIBrain:
             logger.info(f"Backed up current script to {backup_name}")
         except Exception as e:
             logger.error(f"Self-evolution backup failed: {e}")
+
+        # Save new version of Python script (for manual switch)
+        new_script_name = f"request_v{new_version}.py"
+        new_script_path = os.path.join(os.path.dirname(__file__), new_script_name)
+        try:
+            shutil.copy2(__file__, new_script_path)
+            logger.info(f"New Python script version created: {new_script_path}")
+        except Exception as e:
+            logger.error(f"Failed to create new Python script version: {e}")
+
+        # Update the current version in the MODEL_DIR
+        try:
+            with open(VERSION_FILE, "w") as f: f.write(new_version)
+            self.current_version = new_version
+            logger.info(f"Updated current version to {self.current_version}")
+        except Exception as e:
+            logger.error(f"Failed to update version file: {e}")
+
+        # EA Evolution (if conditions met and safety checks pass)
+        try:
+            with open(EA_PATH, "r") as f: content = f.read()
+            # Simple safety check: ensure some critical buttons are present
+            if all(btn in content for btn in ["BTN_MAIN_TRENDLINE", "BTN_MAIN_DUP", "BTN_MAIN_FROZEN"]):
+                # This part is for potential automated EA updates, currently just logs
+                logger.info(f"EA evolution check passed. Current EA version: {self.current_version}")
+            else:
+                logger.error("EA Evolution aborted: Safety check failed (manual buttons missing).")
+        except Exception as e:
+            logger.error(f"EA Evolution failed: {e}")
+
+        self.last_evolved_pf = self.profit_factor
+        logger.info(f">>> SYSTEM EVOLVED TO v{self.current_version}. Please consider switching to the new Python script: {new_script_name}")
 
     def predict(self, features):
         if not features: return 0.5, 0, 20
@@ -362,8 +392,9 @@ class AIBrain:
             max_hold = 20
             try:
                 if hasattr(self.model, "classes_"):
-                    hour = datetime.fromtimestamp(features.get('timestamp', time.time())).hour
-                    feat_vec = [features.get(f, 0) for f in self.get_feature_cols()]
+                    # Ensure feature vector matches training features
+                    feature_names = self.get_feature_cols()
+                    feat_vec = [features.get(f, 0) for f in feature_names]
                     ml_prob = self.model.predict_proba([feat_vec])[0][1]
                 if hasattr(self.regressor, "n_features_in_"):
                      max_hold = int(self.regressor.predict([feat_vec])[0])
@@ -433,7 +464,7 @@ class Visualizer:
 
     def update_plot(self, ohlc_df, ai_scores, current_set, status, symbol, tf, snr_weight, candle_details, mtf_data):
         if not plt.fignum_exists(self.fig.number): return
-        self.fig.suptitle(f'{symbol} ({tf}) - Status: {status} - Set: {current_set} - SnR Weight: {snr_weight}', color='white', y=0.98)
+        self.fig.suptitle(f'{symbol} ({tf}) - Status: {status} - Set: {current_set} - SnR Weight: {snr_weight} - AI Version: {ai_brain.current_version}', color='white', y=0.98)
         if not ohlc_df.empty:
             self.ax_main.clear()
             self.ax_ai.clear()
@@ -505,23 +536,83 @@ def safe_bool(val, default=False):
     except:
         return default
 
+def parse_single_mtf_message(mtf_msg_string):
+    """Parses a single MTF message string from MT5."""
+    try:
+        parts = mtf_msg_string.split('|')
+        if len(parts) < 6: # OHLC + Symbol + Timestamp + SetCount + Timeframe + Features
+            log_parser_error("MTF_PARSE_ERROR", mtf_msg_string, "Not enough parts in single MTF message")
+            return None
+
+        ohlc_str = parts[0]
+        raw_history = ohlc_str.split(';')
+        ohlc_list = []
+        for candle in raw_history:
+            if not candle or candle.strip() == '': continue
+            try:
+                o, h, l, c = map(float, candle.split(','))
+                ohlc_list.append([o, h, l, c])
+            except ValueError:
+                continue # Skip malformed candles
+        
+        if not ohlc_list: return None
+
+        tf_name = parts[4]
+        return {
+            'tf_name': tf_name,
+            'candles': len(ohlc_list),
+            'open': ohlc_list[-1][0],
+            'high': ohlc_list[-1][1],
+            'low': ohlc_list[-1][2],
+            'close': ohlc_list[-1][3],
+            'features': parts[5:] # Remaining parts are features
+        }
+    except Exception as e:
+        log_parser_error("MTF_PARSE_ERROR", mtf_msg_string, str(e))
+        return None
+
 def parse_mql5_data(data_string):
     """
     ROBUST MT5 data parser with error recovery
     Format: "o1,h1,l1,c1;o2,h2,l2,c2;...;o100,h100,l100,c100|SYMBOL|TIMESTAMP|SETCOUNT|TIMEFRAME|FEATURES..."
-    
-    Handles:
-    - Variable number of features
-    - Extra/malformed data
-    - Missing features (uses defaults)
-    - Graceful fallback on errors
+    Or for MTF: "MTF_DATA\nMTF_TF1_MSG\nMTF_TF2_MSG..."
     """
     global parse_error_count
+    global global_mtf_mode
     try:
-        parts = data_string.replace('\x00', '').strip().split('|')
+        data_string = data_string.replace('\x00', '').strip()
+
+        # Check for MTF data block
+        if data_string.startswith("MTF_DATA\n"):
+            global_mtf_mode = True
+            mtf_block = data_string[len("MTF_DATA\n"):].strip()
+            single_tf_messages = mtf_block.split('\n')
+            parsed_mtf_data = {}
+            for msg in single_tf_messages:
+                if msg.strip() == "": continue
+                parsed_tf = parse_single_mtf_message(msg)
+                if parsed_tf:
+                    parsed_mtf_data[parsed_tf['tf_name']] = {
+                        'candles': parsed_tf['candles'],
+                        'open': parsed_tf['open'],
+                        'high': parsed_tf['high'],
+                        'low': parsed_tf['low'],
+                        'close': parsed_tf['close']
+                    }
+            # For MTF mode, we don't have a single OHLC_DF or main features
+            # We'll return dummy values or adapt the visualizer to handle this.
+            # For now, return the last received single TF data if available, or empty.
+            # This needs careful consideration for how the visualizer will display.
+            # For simplicity, let's assume the main display still shows the primary TF.
+            # The MTF data will be passed separately.
+            return None, None, (None, parsed_mtf_data) # No main OHLC_DF or features in this mode
+        else:
+            global_mtf_mode = False
+
+        parts = data_string.split('|')
         
         if len(parts) < 5:
-            print(f"ERROR: Not enough parts in data. Got {len(parts)}, expected >= 5")
+            log_parser_error("MAIN_PARSE_ERROR", data_string, f"Not enough parts in data. Got {len(parts)}, expected >= 5")
             return None, None, None
 
         # PART 0: OHLC History (semicolon-separated candles)
@@ -540,11 +631,16 @@ def parse_mql5_data(data_string):
                 continue
         
         if not ohlc_list:
-            print("ERROR: No valid OHLC data parsed")
+            log_parser_error("MAIN_PARSE_ERROR", data_string, "No valid OHLC data parsed")
             return None, None, None
         
         df = pd.DataFrame(ohlc_list, columns=['Open', 'High', 'Low', 'Close'])
-        df.index = pd.date_range(start=datetime.now(), periods=len(df), freq='1min')
+        # Use actual timestamp from MT5 for the last candle, then infer previous ones
+        last_candle_timestamp = datetime.fromtimestamp(safe_int(parts[2], int(time.time())))
+        # Assuming 1-minute frequency for simplicity, adjust if MT5 sends actual TF
+        # For now, the visualizer will use the TF from features, not from this inferred index.
+        df.index = pd.to_datetime([last_candle_timestamp - pd.Timedelta(minutes=(len(df) - 1 - i)) for i in range(len(df))])
+        df.index.name = 'Date'
         
         # PARTS 1+: Features (with safe parsing and defaults)
         features = {
@@ -555,37 +651,69 @@ def parse_mql5_data(data_string):
         }
         
         # Safely parse optional features with defaults
-        if len(parts) > 5:  features['set_magnitude'] = safe_float(parts[5])
-        if len(parts) > 6:  features['bars_duration'] = safe_int(parts[6])
-        if len(parts) > 7:  features['dist_from_be'] = safe_float(parts[7])
-        if len(parts) > 8:  features['active_TL_option'] = safe_int(parts[8])
-        if len(parts) > 9:  features['dynamic_TL_slope'] = safe_float(parts[9])
-        if len(parts) > 10: features['snr_weight'] = safe_int(parts[10])
-        if len(parts) > 11: features['is_at_snr'] = safe_bool(parts[11])
-        if len(parts) > 12: features['tp_m15'] = safe_float(parts[12])
-        if len(parts) > 13: features['tp_h1'] = safe_float(parts[13])
-        if len(parts) > 14: features['rejection_candle_total_range'] = safe_float(parts[14])
-        if len(parts) > 15: features['rejection_candle_body_size'] = safe_float(parts[15])
-        if len(parts) > 16: features['rejection_candle_upper_wick_size'] = safe_float(parts[16])
-        if len(parts) > 17: features['rejection_candle_lower_wick_size'] = safe_float(parts[17])
-        if len(parts) > 18: features['rejection_candle_body_to_range_ratio'] = safe_float(parts[18])
-        if len(parts) > 19: features['rejection_candle_is_large_relative_to_average'] = safe_bool(parts[19])
-        if len(parts) > 20: features['rejection_candle_volume'] = safe_float(parts[20])
-        if len(parts) > 21: features['bearish_sequence_length'] = safe_int(parts[21])
-        if len(parts) > 22: features['trend_m30'] = safe_int(parts[22])
-        if len(parts) > 23: features['trend_h1'] = safe_int(parts[23])
+        # This mapping needs to be strictly aligned with MT5 script's SendAndReceiveSocketData
+        feature_start_index = 5
+        feature_keys = [
+            'set_magnitude', 'bars_duration', 'dist_from_be', 'active_TL_option', 
+            'dynamic_TL_slope', 'dynamic_TL_distance_current_price', 
+            'channel_top_distance_current_price', 'channel_bottom_distance_current_price', 
+            'channel_width', 'rejection_candle_total_range', 'rejection_candle_body_size', 
+            'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size', 
+            'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume', 
+            'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4'
+        ]
+        # Add snr_weight, is_at_snr, tp_m15, tp_h1 if they are sent in the main message
+        # Based on MT5 script lines 6897-6916, the order is:
+        # captured_set_magnitude, captured_bars_duration, captured_dist_from_be, captured_active_tl_option,
+        # captured_dynamic_tl_slope, captured_dynamic_tl_distance_current_price,
+        # captured_channel_top_distance_current_price, captured_channel_bottom_distance_current_price,
+        # captured_channel_width, captured_rejection_candle_total_range, captured_rejection_candle_body_size,
+        # captured_rejection_candle_upper_wick_size, captured_rejection_candle_lower_wick_size,
+        # captured_rejection_candle_is_large_relative_to_average, captured_rejection_candle_volume,
+        # captured_bearish_sequence_length, g_trend_m15, g_trend_h1, g_trend_h4
+        # The MT5 script also has snr_weight and is_at_snr as global variables, but they are not explicitly sent in this message.
+        # I will add placeholders for them in the feature_keys if they are expected by the AI brain.
+        # From the MT5 script's predict function, the feature_cols are:
+        # 'set_magnitude', 'bars_duration', 'hour_of_day', 'dist_from_be', 'active_TL_option', 'dynamic_TL_slope', 
+        # 'snr_weight', 'is_at_snr', 'tp_m15', 'tp_h1', 'rejection_candle_total_range', 'rejection_candle_body_size', 
+        # 'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size', 'rejection_candle_body_to_range_ratio', 
+        # 'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume', 'bearish_sequence_length'
+        # This means there's a mismatch between what MT5 sends and what Python expects for features.
+        # I need to align these. For now, I will parse what MT5 sends and let the AI brain handle missing features with defaults.
+
+        # Re-aligning feature_keys based on MT5 script lines 6897-6916
+        mt5_sent_feature_keys = [
+            'set_magnitude', 'bars_duration', 'dist_from_be', 'active_TL_option', 
+            'dynamic_TL_slope', 'dynamic_TL_distance_current_price', 
+            'channel_top_distance_current_price', 'channel_bottom_distance_current_price', 
+            'channel_width', 'rejection_candle_total_range', 'rejection_candle_body_size', 
+            'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size', 
+            'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume', 
+            'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4'
+        ]
+
+        for i, key in enumerate(mt5_sent_feature_keys):
+            if feature_start_index + i < len(parts):
+                if key == 'rejection_candle_is_large_relative_to_average':
+                    features[key] = safe_bool(parts[feature_start_index + i])
+                elif key in ['set_magnitude', 'bars_duration', 'active_TL_option', 'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4']:
+                    features[key] = safe_int(parts[feature_start_index + i])
+                else:
+                    features[key] = safe_float(parts[feature_start_index + i])
         
-        # --- Parse MTF Data (if available) ---
-        mtf_data = {}
-        if len(parts) > 24:
-            try:
-                mtf_json = parts[24]
-                mtf_data = json.loads(mtf_json)
-                print(f">>> MTF DATA RECEIVED: {list(mtf_data.keys())}")
-                log_mtf_data(features['symbol'], features['timeframe'], len(df), features)
-            except:
-                pass
-        
+        # Add 'hour_of_day' which is derived from timestamp
+        features['hour_of_day'] = datetime.fromtimestamp(features['timestamp']).hour
+
+        # The MT5 script does not send 'snr_weight', 'is_at_snr', 'tp_m15', 'tp_h1', 'rejection_candle_body_to_range_ratio'
+        # in the main message. The AI brain's get_feature_cols expects them. 
+        # These will be handled by the .get(key, 0) with default 0 in predict function.
+        # However, 'rejection_candle_body_to_range_ratio' is calculated in MT5 for logging, but not sent.
+        # I will add it to features here if it can be derived.
+        if features.get('rejection_candle_total_range', 0) > 0:
+            features['rejection_candle_body_to_range_ratio'] = features.get('rejection_candle_body_size', 0) / features['rejection_candle_total_range']
+        else:
+            features['rejection_candle_body_to_range_ratio'] = 0.0
+
         # --- Extract Candle Details with Timestamp and Data Type Detection ---
         candle_timestamp = datetime.fromtimestamp(features['timestamp'])
         current_time = datetime.now()
@@ -626,7 +754,7 @@ def parse_mql5_data(data_string):
             # SAME CANDLE - just print a dot to show data is flowing
             print(".", end="", flush=True)
         
-        return df, features, (candle_details, mtf_data)
+        return df, features, (candle_details, {}) # No MTF data in this path
     except Exception as e:
         parse_error_count += 1
         log_parser_error("GENERAL_PARSE_ERROR", str(data_string)[:200], str(e))
@@ -635,9 +763,69 @@ def parse_mql5_data(data_string):
             print(f">>> WARNING: {parse_error_count} parse errors detected. Check {PARSER_LOG} for details.")
         return None, None, None
 
+
+def simulate_trades_on_ohlc(ohlc_df, base_features):
+    """
+    FIX 4: Simulate simple momentum-based trades on the received OHLC candles.
+    This bootstraps the AI brain with initial training data when no history CSV exists.
+    Uses a basic strategy: if close > open (bullish candle), label as win (1), else loss (0).
+    The AI will refine this with real trade outcomes as they come in from MT5.
+    """
+    global ai_brain
+    if len(ohlc_df) < 10:
+        return
+    
+    simulated_count = 0
+    for i in range(5, len(ohlc_df) - 1):
+        try:
+            row = ohlc_df.iloc[i]
+            next_row = ohlc_df.iloc[i + 1]
+            
+            # Simple momentum: if this candle is bullish, predict next goes up
+            is_bullish = row['Close'] > row['Open']
+            next_bullish = next_row['Close'] > next_row['Open']
+            
+            # Outcome: 1 if prediction was correct, 0 if wrong
+            outcome = 1 if (is_bullish == next_bullish) else 0
+            
+            # Estimate pips from the next candle's range
+            pips = (next_row['High'] - next_row['Low']) * (1 if outcome == 1 else -1)
+            
+            # Build a simple feature set from OHLC data
+            sim_features = dict(base_features)  # Copy current features as base
+            sim_features['set_magnitude'] = int(abs(row['Close'] - row['Open']) * 10000)
+            sim_features['bars_duration'] = i
+            sim_features['hour_of_day'] = ohlc_df.index[i].hour if hasattr(ohlc_df.index[i], 'hour') else 12
+            
+            timestamp = int(ohlc_df.index[i].timestamp()) if hasattr(ohlc_df.index[i], 'timestamp') else int(time.time()) - (len(ohlc_df) - i) * 1800
+            
+            ai_brain.record_and_learn(
+                features=sim_features,
+                outcome=outcome,
+                pips=pips,
+                bars=1,
+                timestamp=timestamp
+            )
+            simulated_count += 1
+            
+            if ai_brain.brain_age >= 20:
+                break  # Stop once we have enough initial data
+        except Exception as e:
+            continue
+    
+    if simulated_count > 0:
+        print(f">>> [SIM] Bootstrapped AI with {simulated_count} simulated trades from OHLC history. Brain age: {ai_brain.brain_age}")
+
+
 def handle_client(client_socket):
-    global global_mt5_symbol, global_mt5_timeframe, global_socket_status, ohlc_data_history, ai_score_history, global_candle_details, global_mtf_data, global_mtf_mode
+    global global_mt5_symbol, global_mt5_timeframe, global_socket_status, ohlc_data_history, ai_score_history, global_candle_details, global_mtf_data, global_mtf_mode, last_heartbeat_time
     global_socket_status = "CONNECTED"
+    # FIX 1: Remove inherited timeout from server socket.
+    # MT5 uses a non-blocking socket (ioctlsocket FIONBIO), so it may call recv()
+    # before Python has replied, getting WSAEWOULDBLOCK. Python must stay connected
+    # and keep the socket alive. Setting timeout=None makes Python's recv() block
+    # indefinitely, keeping the connection alive between MT5 ticks.
+    client_socket.settimeout(None)
     print("\n" + "="*60)
     print("[STATE] >>> PYTHON CONNECTED TO MT5 <<<")
     print("[STATE] Waiting for market data from MT5...")
@@ -645,8 +833,21 @@ def handle_client(client_socket):
     try:
         while not global_stop_event.is_set():
             data = client_socket.recv(BUFFER_SIZE).decode('utf-8')
+            if not data: 
+                print("Client disconnected.")
+                break
+            
+            # Update heartbeat time on any received data
+            last_heartbeat_time = time.time()
+
+            if data.strip() == "HEARTBEAT":
+                print("[HEARTBEAT] Received heartbeat from MT5.")
+                client_socket.sendall(b"PONG\n")
+                time.sleep(0.1) # Respond to heartbeat with newline
+                continue
+
             print(f"[DATA IN] Received {len(data)} bytes from MT5")
-            if not data: break
+            
             if data.strip().startswith('{'):
                 try:
                     json_data = json.loads(data)
@@ -663,6 +864,25 @@ def handle_client(client_socket):
                 continue
 
             ohlc_df, features, extra_data = parse_mql5_data(data)
+            
+            if extra_data and extra_data[0] is None and extra_data[1]: # MTF data only
+                global_candle_details, global_mtf_data = extra_data
+                # For MTF mode, we don't have a single OHLC_DF or main features to plot on ax_main
+                # We need to decide what to display. For now, we'll just update global_mtf_data
+                # and let the visualizer handle it.
+                plot_update_queue.put({
+                    'ohlc': ohlc_data_history, # Keep previous OHLC for main plot
+                    'scores': pd.Series(ai_score_history, index=ohlc_data_history.index[-len(ai_score_history):]) if not ohlc_data_history.empty else pd.Series(),
+                    'set': 0, # N/A for MTF only
+                    'status': global_socket_status,
+                    'symbol': global_mt5_symbol,
+                    'tf': global_mt5_timeframe,
+                    'snr': 0, # N/A for MTF only
+                    'candle_details': global_candle_details, # This will be from the last single TF update
+                    'mtf_data': global_mtf_data
+                })
+                continue
+
             if ohlc_df is not None and features is not None:
                 print(f"[DATA PARSE] Symbol={features.get('symbol', '?')}, TF={features.get('timeframe', '?')}, Candles={len(ohlc_df)}")
             else:
@@ -670,7 +890,7 @@ def handle_client(client_socket):
                 continue
             
             if extra_data:
-                global_candle_details, global_mtf_data = extra_data
+                global_candle_details, _ = extra_data # MTF data is handled by the MTF_DATA block
             
             if features['symbol'] != global_mt5_symbol or features['timeframe'] != global_mt5_timeframe:
                 global_mt5_symbol = features['symbol']
@@ -685,6 +905,7 @@ def handle_client(client_socket):
                 response = f"{score:.4f}|{direction}|{max_hold}\n"
                 print(f"[DATA OUT] Sending response: Score={score:.4f}, Direction={direction}, MaxHold={max_hold}")
                 client_socket.sendall(response.encode('utf-8'))
+                time.sleep(0.1) # Response already includes \n
             except Exception as e:
                 print(f"[DATA ERROR] Failed to predict or send response: {e}")
                 continue
@@ -693,6 +914,12 @@ def handle_client(client_socket):
             ai_score_history.append(score)
             if len(ai_score_history) > len(ohlc_data_history):
                 ai_score_history.pop(0)
+            
+            # FIX 4: Simulate trades on received OHLC candles to bootstrap AI training.
+            # If the history CSV is empty or missing, we run a simple momentum simulation
+            # on the 100 candles to generate initial training data for the AI brain.
+            if ai_brain.brain_age < 20 and len(ohlc_df) >= 10:
+                simulate_trades_on_ohlc(ohlc_df, features)
             
             plot_update_queue.put({
                 'ohlc': ohlc_data_history,
@@ -703,17 +930,25 @@ def handle_client(client_socket):
                 'tf': global_mt5_timeframe,
                 'snr': features.get('snr_weight', 0),
                 'candle_details': global_candle_details,
-                'mtf_data': global_mtf_data
+                'mtf_data': global_mtf_data # Pass the global MTF data
             })
     except ConnectionResetError:
-        print("Client disconnected.")
+        print("[SOCKET] Client (MT5) forcibly closed the connection.")
+    except socket.timeout:
+        # Should not happen since we set timeout=None, but handle gracefully
+        print("[SOCKET WARNING] Client socket timed out unexpectedly. MT5 may have disconnected.")
     except Exception as e:
-        print(f"Error in client handler: {e}")
+        print(f"[SOCKET ERROR] Error in client handler: {e}")
     finally:
         global_socket_status = "DISCONNECTED"
-        client_socket.close()
+        try:
+            client_socket.close()
+        except Exception:
+            pass
+        print("[SOCKET] Connection closed. Waiting for MT5 to reconnect...")
 
 def socket_server():
+    global last_heartbeat_time
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((HOST, PORT))
@@ -728,7 +963,10 @@ def socket_server():
             handler = threading.Thread(target=handle_client, args=(client,), daemon=True)
             handler.start()
         except socket.timeout:
-            print("Waiting for MT5 connection...")
+            # Check for heartbeat timeout if no connection is active
+            if global_socket_status == "DISCONNECTED" and (time.time() - last_heartbeat_time > 30):
+                print("[WARNING] No MT5 connection or heartbeat for 30 seconds. Is MT5 running?")
+                last_heartbeat_time = time.time() # Reset to avoid spamming
             continue
     server.close()
     print("Server shut down.")
@@ -738,34 +976,45 @@ def run_visualizer():
     plt.show(block=False)  # Show window non-blocking
     
     while not global_stop_event.is_set():
+        # FIX 2: Always process matplotlib events, even when no data arrives.
+        # The previous code had `continue` inside the inner except queue.Empty,
+        # which skipped flush_events/plt.pause and made the window unresponsive.
+        # Now we always call flush_events and plt.pause on every loop iteration.
         try:
-            try:
-                data = plot_update_queue.get(timeout=0.5)
-            except queue.Empty:
-                time.sleep(0.05)   # 🔥 prevent CPU burn
-                continue
-            viz.update_plot(
-                data['ohlc'], 
-                data['scores'], 
-                data['set'], 
-                data['status'], 
-                data['symbol'], 
-                data['tf'], 
-                data['snr'],
-                data.get('candle_details', {}),
-                data.get('mtf_data', {})
-            )
-        except queue.Empty:
             if not plt.fignum_exists(viz.fig.number):
                 print("Visualizer window closed by user.")
                 global_stop_event.set()
                 break
+
+            # Try to get data from the queue (non-blocking with short timeout)
+            try:
+                data = plot_update_queue.get(block=False)
+                viz.update_plot(
+                    data['ohlc'],
+                    data['scores'],
+                    data['set'],
+                    data['status'],
+                    data['symbol'],
+                    data['tf'],
+                    data['snr'],
+                    data.get('candle_details', {}),
+                    data.get('mtf_data', {})
+                )
+            except queue.Empty:
+                # No new data - that's fine, just keep the window responsive
+                pass
+
+            # ALWAYS flush events and pause so matplotlib can process
+            # button clicks, window moves, and other GUI events
             viz.fig.canvas.flush_events()
-            plt.pause(0.01)
+            plt.pause(0.05)  # 50ms pause - enough for GUI responsiveness
+
         except Exception as e:
             print(f"Visualizer update error: {e}")
+            import traceback
+            traceback.print_exc()
             break
-    
+
     plt.close(viz.fig)
     print("Visualizer shut down.")
 
