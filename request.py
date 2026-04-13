@@ -21,7 +21,7 @@ import mplfinance as mpf
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "AI Brain Master 12.2 - Robust MTF Parser & Versioned Evolution"
+VERSION = "AI Brain Master 12.3 - Robust MTF Parser & Versioned Evolution"
 
 # --- Configuration ---
 CONFIG_FILE = "request_config.json"
@@ -598,6 +598,11 @@ def parse_mql5_data(data_string):
         if not data_string:
             return None, None, None
 
+        # Ignore tiny non-market control packets that may arrive over the same socket.
+        # Keep flow unchanged: only real payloads are parsed for AI prediction.
+        if len(data_string) < 20 and not data_string.startswith('{'):
+            return None, None, None
+
         # ====================== MTF DATA BLOCK ======================
         if data_string.startswith("MTF_DATA\n"):
             global_mtf_mode = True
@@ -799,11 +804,115 @@ def handle_client(client_socket):
     print("[STATE] >>> PYTHON CONNECTED TO MT5 <<<")
     print("[STATE] Waiting for market data from MT5...")
     print("="*60 + "\n")
+    recv_buffer = ""
+
+    def process_payload(payload):
+        nonlocal recv_buffer
+        global global_mt5_symbol, global_mt5_timeframe, global_socket_status
+        global ohlc_data_history, ai_score_history, global_candle_details, global_mtf_data
+        global global_mtf_mode, last_heartbeat_time
+
+        data = payload.replace('\x00', '').strip()
+        if not data:
+            return
+
+        if (
+            data == "HEARTBEAT"
+            or data.startswith("HEARTBEAT")
+            or data.startswith("PING")
+            or data.startswith("PONG")
+        ):
+            print("[HEARTBEAT] Received heartbeat from MT5.")
+            client_socket.sendall(b"PONG\n")
+            time.sleep(0.1)
+            return
+
+        if data.startswith('{'):
+            try:
+                json_data = json.loads(data)
+                if json_data.get('action') == 'learn':
+                    ai_brain.record_and_learn(
+                        features=json_data.get('features', {}),
+                        outcome=json_data.get('outcome', 0),
+                        pips=json_data.get('pips', 0),
+                        bars=json_data.get('bars', 0),
+                        timestamp=json_data.get('timestamp', int(time.time()))
+                    )
+            except json.JSONDecodeError:
+                pass
+            return
+
+        ohlc_df, features, extra_data = parse_mql5_data(data)
+
+        if extra_data and extra_data[0] is None and extra_data[1]:  # Pure MTF packet
+            global_candle_details, global_mtf_data = extra_data
+            plot_update_queue.put({
+                'ohlc': ohlc_data_history,
+                'scores': pd.Series(ai_score_history) if ai_score_history else pd.Series(),
+                'set': 0,
+                'status': global_socket_status,
+                'symbol': global_mt5_symbol,
+                'tf': global_mt5_timeframe or "MTF",
+                'snr': 0,
+                'candle_details': global_candle_details,
+                'mtf_data': global_mtf_data
+            })
+            return
+
+        if ohlc_df is not None and features is not None:
+            print(f"[DATA PARSE] Symbol={features.get('symbol', '?')}, TF={features.get('timeframe', '?')}, Candles={len(ohlc_df)}")
+        else:
+            if len(data) >= 20:
+                print(f"[DATA ERROR] Failed to parse data from MT5")
+            return
+
+        if extra_data:
+            global_candle_details, _ = extra_data
+
+        if features['symbol'] != global_mt5_symbol or features['timeframe'] != global_mt5_timeframe:
+            global_mt5_symbol = features['symbol']
+            global_mt5_timeframe = features['timeframe']
+            ai_score_history = []
+
+        if ai_brain.learning_status == "INITIALIZING":
+            ai_brain.learning_status = "LEARNING" if ai_brain.brain_age < 50 else "EVOLVING"
+
+        try:
+            score, direction, max_hold = ai_brain.predict(features)
+            response = f"{score:.4f}|{direction}|{max_hold}\n"
+            print(f"[DATA OUT] Sending response: Score={score:.4f}, Direction={direction}, MaxHold={max_hold}")
+            client_socket.sendall(response.encode('utf-8'))
+        except BrokenPipeError:
+            print("[SOCKET] Broken pipe - Client disconnected during send")
+            raise
+        except Exception as e:
+            print(f"[DATA ERROR] Failed to predict or send response: {e}")
+            return
+
+        ohlc_data_history = ohlc_df
+        ai_score_history.append(score)
+        if len(ai_score_history) > len(ohlc_data_history):
+            ai_score_history.pop(0)
+
+        if ai_brain.brain_age < 20 and len(ohlc_df) >= 10:
+            simulate_trades_on_ohlc(ohlc_df, features)
+
+        plot_update_queue.put({
+            'ohlc': ohlc_data_history,
+            'scores': pd.Series(ai_score_history, index=ohlc_data_history.index[-len(ai_score_history):]),
+            'set': features.get('set_count', 0),
+            'status': global_socket_status,
+            'symbol': global_mt5_symbol,
+            'tf': global_mt5_timeframe,
+            'snr': features.get('snr_weight', 0),
+            'candle_details': global_candle_details,
+            'mtf_data': global_mtf_data
+        })
     try:
         while not global_stop_event.is_set():
             try:
-                data = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
-                if not data:
+                chunk = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
+                if not chunk:
                     print("Client disconnected (empty recv).")
                     break
             except ConnectionResetError:
@@ -818,98 +927,18 @@ def handle_client(client_socket):
             
             # Update heartbeat time on any received data
             last_heartbeat_time = time.time()
+            recv_buffer += chunk
+            print(f"[DATA IN] Received {len(chunk)} bytes from MT5")
 
-            if data.strip() == "HEARTBEAT":
-                print("[HEARTBEAT] Received heartbeat from MT5.")
-                client_socket.sendall(b"PONG\n")
-                time.sleep(0.1) # Respond to heartbeat with newline
-                continue
+            # Primary framing: MT5 StringToCharArray sends trailing '\x00' terminator.
+            while '\x00' in recv_buffer:
+                packet, recv_buffer = recv_buffer.split('\x00', 1)
+                process_payload(packet)
 
-            print(f"[DATA IN] Received {len(data)} bytes from MT5")
-            
-            if data.strip().startswith('{'):
-                try:
-                    json_data = json.loads(data)
-                    if json_data.get('action') == 'learn':
-                        ai_brain.record_and_learn(
-                            features=json_data.get('features', {}),
-                            outcome=json_data.get('outcome', 0),
-                            pips=json_data.get('pips', 0),
-                            bars=json_data.get('bars', 0),
-                            timestamp=json_data.get('timestamp', int(time.time()))
-                        )
-                except json.JSONDecodeError:
-                    pass
-                continue
-
-            ohlc_df, features, extra_data = parse_mql5_data(data)
-            
-            if extra_data and extra_data[0] is None and extra_data[1]:  # Pure MTF packet
-                global_candle_details, global_mtf_data = extra_data
-                plot_update_queue.put({
-                    'ohlc': ohlc_data_history,           # keep last main chart
-                    'scores': pd.Series(ai_score_history) if ai_score_history else pd.Series(),
-                    'set': 0,
-                    'status': global_socket_status,
-                    'symbol': global_mt5_symbol,
-                    'tf': global_mt5_timeframe or "MTF",
-                    'snr': 0,
-                    'candle_details': global_candle_details,
-                    'mtf_data': global_mtf_data
-                })
-                continue
-
-            if ohlc_df is not None and features is not None:
-                print(f"[DATA PARSE] Symbol={features.get('symbol', '?')}, TF={features.get('timeframe', '?')}, Candles={len(ohlc_df)}")
-            else:
-                print(f"[DATA ERROR] Failed to parse data from MT5")
-                continue
-            
-            if extra_data:
-                global_candle_details, _ = extra_data # MTF data is handled by the MTF_DATA block
-            
-            if features['symbol'] != global_mt5_symbol or features['timeframe'] != global_mt5_timeframe:
-                global_mt5_symbol = features['symbol']
-                global_mt5_timeframe = features['timeframe']
-                ai_score_history = []
-            
-            if ai_brain.learning_status == "INITIALIZING":
-                ai_brain.learning_status = "LEARNING" if ai_brain.brain_age < 50 else "EVOLVING"
-
-            try:
-                score, direction, max_hold = ai_brain.predict(features)
-                response = f"{score:.4f}|{direction}|{max_hold}\n"
-                print(f"[DATA OUT] Sending response: Score={score:.4f}, Direction={direction}, MaxHold={max_hold}")
-                client_socket.sendall(response.encode('utf-8'))
-            except BrokenPipeError:
-                print("[SOCKET] Broken pipe - Client disconnected during send")
-                break
-            except Exception as e:
-                print(f"[DATA ERROR] Failed to predict or send response: {e}")
-                continue
-            
-            ohlc_data_history = ohlc_df
-            ai_score_history.append(score)
-            if len(ai_score_history) > len(ohlc_data_history):
-                ai_score_history.pop(0)
-            
-            # FIX 4: Simulate trades on received OHLC candles to bootstrap AI training.
-            # If the history CSV is empty or missing, we run a simple momentum simulation
-            # on the 100 candles to generate initial training data for the AI brain.
-            if ai_brain.brain_age < 20 and len(ohlc_df) >= 10:
-                simulate_trades_on_ohlc(ohlc_df, features)
-            
-            plot_update_queue.put({
-                'ohlc': ohlc_data_history,
-                'scores': pd.Series(ai_score_history, index=ohlc_data_history.index[-len(ai_score_history):]),
-                'set': features.get('set_count', 0),
-                'status': global_socket_status,
-                'symbol': global_mt5_symbol,
-                'tf': global_mt5_timeframe,
-                'snr': features.get('snr_weight', 0),
-                'candle_details': global_candle_details,
-                'mtf_data': global_mtf_data # Pass the global MTF data
-            })
+            # Fallback for plain text keepalive packets without '\x00'.
+            while '\n' in recv_buffer and len(recv_buffer) < 256:
+                line, recv_buffer = recv_buffer.split('\n', 1)
+                process_payload(line)
     except ConnectionResetError:
         print("[SOCKET] Client (MT5) forcibly closed the connection.")
     except socket.timeout:
