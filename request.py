@@ -39,38 +39,57 @@ def load_config():
     return {}
 
 config = load_config()
+
 MT5_BASE_PATH = config.get("mt5_path", "/home/ubuntu/upload")
+HISTORY_CSV = None  # Will be set by find_history_file()
 
 def find_history_file(base_path):
+    """Find MT5_Set_History.csv with smart fallback logic"""
+    global HISTORY_CSV  # Important: allow modifying the global variable
+    
     direct_path = os.path.join(base_path, "MT5_Set_History.csv")
     
-    # FIX 3a: If the configured mt5_path directory doesn't exist (e.g., running on
-    # a different machine), fall back to the local working directory immediately.
+    # FIX 3a: Configured mt5_path doesn't exist (different machine, Wine, etc.)
     dir_part = os.path.dirname(direct_path)
     if dir_part and not os.path.exists(dir_part):
         local_path = os.path.abspath("MT5_Set_History.csv")
         print(f"!!! WARNING: Configured mt5_path '{base_path}' does not exist.")
         print(f"!!! Falling back to local path: {local_path}")
+        HISTORY_CSV = local_path
         return local_path
 
+    # Direct path exists → use it
     if os.path.exists(direct_path):
+        HISTORY_CSV = direct_path
         return direct_path
     
+    # Auto-discovery in the base_path directory tree
     print(f">>> AUTO-DISCOVERY: Searching for MT5_Set_History.csv in {base_path}...")
     for root, dirs, files in os.walk(base_path):
         if "MT5_Set_History.csv" in files:
             found_path = os.path.join(root, "MT5_Set_History.csv")
             print(f">>> AUTO-DISCOVERY: Found history file at {found_path}")
+            HISTORY_CSV = found_path
             return found_path
     
-    if os.path.exists("MT5_Set_History.csv"):
-        return os.path.abspath("MT5_Set_History.csv")
-        
+    # Fallback to current working directory
+    local_path = os.path.abspath("MT5_Set_History.csv")
+    if os.path.exists(local_path):
+        print(f">>> Using local history file: {local_path}")
+        HISTORY_CSV = local_path
+        return local_path
+    
+    # Manual path from config (if any)
     manual_path = config.get("history_file_path")
     if manual_path and os.path.exists(manual_path):
+        print(f">>> Using manual history path from config: {manual_path}")
+        HISTORY_CSV = manual_path
         return manual_path
-        
-    return direct_path
+    
+    # Final fallback - create the file in current directory if nothing found
+    print(f"!!! WARNING: History file not found. Will create new one at: {local_path}")
+    HISTORY_CSV = local_path
+    return local_path
 
 HISTORY_CSV = find_history_file(MT5_BASE_PATH)
 EA_PATH = os.path.join(MT5_BASE_PATH, "test2.mq5")
@@ -572,197 +591,146 @@ def parse_single_mtf_message(mtf_msg_string):
         return None
 
 def parse_mql5_data(data_string):
-    """
-    ROBUST MT5 data parser with error recovery
-    Format: "o1,h1,l1,c1;o2,h2,l2,c2;...;o100,h100,l100,c100|SYMBOL|TIMESTAMP|SETCOUNT|TIMEFRAME|FEATURES..."
-    Or for MTF: "MTF_DATA\nMTF_TF1_MSG\nMTF_TF2_MSG..."
-    """
-    global parse_error_count
-    global global_mtf_mode
+    global parse_error_count, global_mtf_mode, global_mtf_data, global_candle_details, last_printed_candle
+
     try:
         data_string = data_string.replace('\x00', '').strip()
+        if not data_string:
+            return None, None, None
 
-        # Check for MTF data block
+        # ====================== MTF DATA BLOCK ======================
         if data_string.startswith("MTF_DATA\n"):
             global_mtf_mode = True
             mtf_block = data_string[len("MTF_DATA\n"):].strip()
-            single_tf_messages = mtf_block.split('\n')
+            single_tf_messages = [msg.strip() for msg in mtf_block.split('\n') if msg.strip()]
+
             parsed_mtf_data = {}
             for msg in single_tf_messages:
-                if msg.strip() == "": continue
                 parsed_tf = parse_single_mtf_message(msg)
-                if parsed_tf:
+                if parsed_tf and parsed_tf.get('tf_name'):
                     parsed_mtf_data[parsed_tf['tf_name']] = {
                         'candles': parsed_tf['candles'],
-                        'open': parsed_tf['open'],
-                        'high': parsed_tf['high'],
-                        'low': parsed_tf['low'],
-                        'close': parsed_tf['close']
+                        'open': parsed_tf.get('open', 0),
+                        'high': parsed_tf.get('high', 0),
+                        'low': parsed_tf.get('low', 0),
+                        'close': parsed_tf.get('close', 0)
                     }
-            # For MTF mode, we don't have a single OHLC_DF or main features
-            # We'll return dummy values or adapt the visualizer to handle this.
-            # For now, return the last received single TF data if available, or empty.
-            # This needs careful consideration for how the visualizer will display.
-            # For simplicity, let's assume the main display still shows the primary TF.
-            # The MTF data will be passed separately.
-            return None, None, (None, parsed_mtf_data) # No main OHLC_DF or features in this mode
-        else:
-            global_mtf_mode = False
 
+            global_mtf_data = parsed_mtf_data
+            print(f"[MTF] Received data for {len(parsed_mtf_data)} timeframes: {list(parsed_mtf_data.keys())}")
+            return None, None, (global_candle_details or {}, global_mtf_data)
+
+        # ====================== NORMAL SINGLE TF MODE ======================
+        global_mtf_mode = False
         parts = data_string.split('|')
-        
         if len(parts) < 5:
-            log_parser_error("MAIN_PARSE_ERROR", data_string, f"Not enough parts in data. Got {len(parts)}, expected >= 5")
+            log_parser_error("MAIN_PARSE_ERROR", data_string[:300], f"Not enough parts: {len(parts)}")
             return None, None, None
 
-        # PART 0: OHLC History (semicolon-separated candles)
+        # --- OHLC History ---
         ohlc_history = parts[0]
         raw_history = ohlc_history.split(';')
-        
         ohlc_list = []
         for candle in raw_history:
-            if not candle or candle.strip() == '': 
-                continue
+            if not candle.strip(): continue
             try:
                 o, h, l, c = map(float, candle.split(','))
                 ohlc_list.append([o, h, l, c])
-            except ValueError:
-                # Skip malformed candles silently
+            except:
                 continue
-        
+
         if not ohlc_list:
-            log_parser_error("MAIN_PARSE_ERROR", data_string, "No valid OHLC data parsed")
             return None, None, None
-        
+
         df = pd.DataFrame(ohlc_list, columns=['Open', 'High', 'Low', 'Close'])
-        # Use actual timestamp from MT5 for the last candle, then infer previous ones
-        last_candle_timestamp = datetime.fromtimestamp(safe_int(parts[2], int(time.time())))
-        # Assuming 1-minute frequency for simplicity, adjust if MT5 sends actual TF
-        # For now, the visualizer will use the TF from features, not from this inferred index.
-        df.index = pd.to_datetime([last_candle_timestamp - pd.Timedelta(minutes=(len(df) - 1 - i)) for i in range(len(df))])
+
+        # FIXED: Safe datetime index (no more 'infer' error)
+        try:
+            last_candle_timestamp = datetime.fromtimestamp(int(parts[2]))
+            # Create index manually to avoid any frequency issues
+            dates = [last_candle_timestamp - pd.Timedelta(minutes=i) for i in range(len(df)-1, -1, -1)]
+            df.index = pd.DatetimeIndex(dates)
+        except Exception as idx_err:
+            print(f"[INDEX FALLBACK] {idx_err}")
+            df.index = pd.date_range(end=datetime.now(), periods=len(df), freq='min')
+
         df.index.name = 'Date'
-        
-        # PARTS 1+: Features (with safe parsing and defaults)
+
+        # --- Features ---
         features = {
             'symbol': parts[1] if len(parts) > 1 else 'UNKNOWN',
-            'timestamp': safe_int(parts[2], int(time.time())) if len(parts) > 2 else int(time.time()),
-            'set_count': safe_int(parts[3], 0) if len(parts) > 3 else 0,
+            'timestamp': int(parts[2]) if len(parts) > 2 else int(time.time()),
+            'set_count': int(parts[3]) if len(parts) > 3 else 0,
             'timeframe': parts[4] if len(parts) > 4 else 'UNKNOWN'
         }
-        
-        # Safely parse optional features with defaults
-        # This mapping needs to be strictly aligned with MT5 script's SendAndReceiveSocketData
-        feature_start_index = 5
-        feature_keys = [
-            'set_magnitude', 'bars_duration', 'dist_from_be', 'active_TL_option', 
-            'dynamic_TL_slope', 'dynamic_TL_distance_current_price', 
-            'channel_top_distance_current_price', 'channel_bottom_distance_current_price', 
-            'channel_width', 'rejection_candle_total_range', 'rejection_candle_body_size', 
-            'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size', 
-            'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume', 
-            'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4'
-        ]
-        # Add snr_weight, is_at_snr, tp_m15, tp_h1 if they are sent in the main message
-        # Based on MT5 script lines 6897-6916, the order is:
-        # captured_set_magnitude, captured_bars_duration, captured_dist_from_be, captured_active_tl_option,
-        # captured_dynamic_tl_slope, captured_dynamic_tl_distance_current_price,
-        # captured_channel_top_distance_current_price, captured_channel_bottom_distance_current_price,
-        # captured_channel_width, captured_rejection_candle_total_range, captured_rejection_candle_body_size,
-        # captured_rejection_candle_upper_wick_size, captured_rejection_candle_lower_wick_size,
-        # captured_rejection_candle_is_large_relative_to_average, captured_rejection_candle_volume,
-        # captured_bearish_sequence_length, g_trend_m15, g_trend_h1, g_trend_h4
-        # The MT5 script also has snr_weight and is_at_snr as global variables, but they are not explicitly sent in this message.
-        # I will add placeholders for them in the feature_keys if they are expected by the AI brain.
-        # From the MT5 script's predict function, the feature_cols are:
-        # 'set_magnitude', 'bars_duration', 'hour_of_day', 'dist_from_be', 'active_TL_option', 'dynamic_TL_slope', 
-        # 'snr_weight', 'is_at_snr', 'tp_m15', 'tp_h1', 'rejection_candle_total_range', 'rejection_candle_body_size', 
-        # 'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size', 'rejection_candle_body_to_range_ratio', 
-        # 'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume', 'bearish_sequence_length'
-        # This means there's a mismatch between what MT5 sends and what Python expects for features.
-        # I need to align these. For now, I will parse what MT5 sends and let the AI brain handle missing features with defaults.
 
-        # Re-aligning feature_keys based on MT5 script lines 6897-6916
-        mt5_sent_feature_keys = [
-            'set_magnitude', 'bars_duration', 'dist_from_be', 'active_TL_option', 
-            'dynamic_TL_slope', 'dynamic_TL_distance_current_price', 
-            'channel_top_distance_current_price', 'channel_bottom_distance_current_price', 
-            'channel_width', 'rejection_candle_total_range', 'rejection_candle_body_size', 
-            'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size', 
-            'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume', 
+        # Default features
+        default_features = {
+            'snr_weight': 0, 'is_at_snr': 0, 'tp_m15': 0.0, 'tp_h1': 0.0,
+            'rejection_candle_body_to_range_ratio': 0.0, 'set_magnitude': 0,
+            'bars_duration': 0, 'dist_from_be': 0, 'active_TL_option': 0,
+            'dynamic_TL_slope': 0.0, 'rejection_candle_total_range': 0,
+            'rejection_candle_body_size': 0, 'rejection_candle_upper_wick_size': 0,
+            'rejection_candle_lower_wick_size': 0, 'rejection_candle_is_large_relative_to_average': 0,
+            'rejection_candle_volume': 0, 'bearish_sequence_length': 0,
+            'trend_m15': 0, 'trend_h1': 0, 'trend_h4': 0
+        }
+        features.update(default_features)
+
+        # Parse MT5 sent features
+        mt5_feature_keys = [
+            'set_magnitude', 'bars_duration', 'dist_from_be', 'active_TL_option',
+            'dynamic_TL_slope', 'dynamic_TL_distance_current_price',
+            'channel_top_distance_current_price', 'channel_bottom_distance_current_price',
+            'channel_width', 'rejection_candle_total_range', 'rejection_candle_body_size',
+            'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size',
+            'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume',
             'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4'
         ]
 
-        for i, key in enumerate(mt5_sent_feature_keys):
-            if feature_start_index + i < len(parts):
+        for i, key in enumerate(mt5_feature_keys):
+            idx = 5 + i
+            if idx < len(parts):
+                val = parts[idx].strip()
                 if key == 'rejection_candle_is_large_relative_to_average':
-                    features[key] = safe_bool(parts[feature_start_index + i])
+                    features[key] = safe_bool(val)
                 elif key in ['set_magnitude', 'bars_duration', 'active_TL_option', 'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4']:
-                    features[key] = safe_int(parts[feature_start_index + i])
+                    features[key] = safe_int(val)
                 else:
-                    features[key] = safe_float(parts[feature_start_index + i])
-        
-        # Add 'hour_of_day' which is derived from timestamp
+                    features[key] = safe_float(val)
+
         features['hour_of_day'] = datetime.fromtimestamp(features['timestamp']).hour
 
-        # The MT5 script does not send 'snr_weight', 'is_at_snr', 'tp_m15', 'tp_h1', 'rejection_candle_body_to_range_ratio'
-        # in the main message. The AI brain's get_feature_cols expects them. 
-        # These will be handled by the .get(key, 0) with default 0 in predict function.
-        # However, 'rejection_candle_body_to_range_ratio' is calculated in MT5 for logging, but not sent.
-        # I will add it to features here if it can be derived.
         if features.get('rejection_candle_total_range', 0) > 0:
-            features['rejection_candle_body_to_range_ratio'] = features.get('rejection_candle_body_size', 0) / features['rejection_candle_total_range']
-        else:
-            features['rejection_candle_body_to_range_ratio'] = 0.0
+            features['rejection_candle_body_to_range_ratio'] = features['rejection_candle_body_size'] / features['rejection_candle_total_range']
 
-        # --- Extract Candle Details with Timestamp and Data Type Detection ---
-        candle_timestamp = datetime.fromtimestamp(features['timestamp'])
-        current_time = datetime.now()
-        time_diff_seconds = (current_time - candle_timestamp).total_seconds()
-        
-        # Determine if data is historical or live
-        # Live data: candle time is within last 5 minutes
-        # Historical: candle time is older than 5 minutes
-        is_live = time_diff_seconds < 300  # 5 minutes
-        data_type = "LIVE" if is_live else "HISTORICAL"
-        
+        # Candle details
+        candle_ts = datetime.fromtimestamp(features['timestamp'])
+        is_live = (datetime.now() - candle_ts).total_seconds() < 300
+
         candle_details = {
-            'time': candle_timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-            'date': candle_timestamp.strftime('%Y-%m-%d'),
-            'time_only': candle_timestamp.strftime('%H:%M:%S'),
-            'open': ohlc_list[-1][0],
-            'high': ohlc_list[-1][1],
-            'low': ohlc_list[-1][2],
-            'close': ohlc_list[-1][3],
-            'range': ohlc_list[-1][1] - ohlc_list[-1][2],
+            'time': candle_ts.strftime('%Y-%m-%d %H:%M:%S'),
             'symbol': features['symbol'],
             'timeframe': features['timeframe'],
-            'data_type': data_type,
-            'candle_position': len(df)  # Position of current candle (1-indexed, max 100)
+            'data_type': "LIVE" if is_live else "HISTORICAL",
+            'candle_position': len(df),
+            'range': ohlc_list[-1][1] - ohlc_list[-1][2] if ohlc_list else 0
         }
-        
-        # Show data type indicator in console (only if candle changed)
-        global last_printed_candle
-        current_candle_key = (candle_details['date'], candle_details['time_only'], features['symbol'], features['timeframe'])
-        if current_candle_key != last_printed_candle:
-            # NEW CANDLE - print debug and full candle info
-            print(f">>> DEBUG: Received {len(raw_history)} candles from {features['symbol']} ({features['timeframe']})")
-            data_indicator = "[LIVE]" if is_live else "[HISTORICAL]"
-            candle_position = len(df)  # Position of current candle (1-indexed)
-            print(f">>> CANDLE {data_indicator} [{candle_details['date']} {candle_details['time_only']}] {features['symbol']} {features['timeframe']} | Position: {candle_position}/100")
-            last_printed_candle = current_candle_key
-        else:
-            # SAME CANDLE - just print a dot to show data is flowing
-            print(".", end="", flush=True)
-        
-        return df, features, (candle_details, {}) # No MTF data in this path
+
+        current_key = (candle_details['time'][:10], candle_details['time'][11:19], features['symbol'], features['timeframe'])
+        if current_key != last_printed_candle:
+            print(f">>> CANDLE [{'LIVE' if is_live else 'HIST'}] {candle_details['time']} {features['symbol']} {features['timeframe']}")
+            last_printed_candle = current_key
+
+        global_candle_details = candle_details
+        return df, features, (candle_details, global_mtf_data)
+
     except Exception as e:
         parse_error_count += 1
-        log_parser_error("GENERAL_PARSE_ERROR", str(data_string)[:200], str(e))
-        print(f"Error parsing data: {e}")
-        if parse_error_count % 10 == 0:
-            print(f">>> WARNING: {parse_error_count} parse errors detected. Check {PARSER_LOG} for details.")
+        log_parser_error("GENERAL_PARSE_ERROR", data_string[:250], str(e))
+        print(f"Parse error: {e}")
         return None, None, None
-
+    
 
 def simulate_trades_on_ohlc(ohlc_df, base_features):
     """
@@ -820,6 +788,7 @@ def simulate_trades_on_ohlc(ohlc_df, base_features):
 def handle_client(client_socket):
     global global_mt5_symbol, global_mt5_timeframe, global_socket_status, ohlc_data_history, ai_score_history, global_candle_details, global_mtf_data, global_mtf_mode, last_heartbeat_time
     global_socket_status = "CONNECTED"
+    client_socket.settimeout(None)  # Blocking receive - keeps connection alive
     # FIX 1: Remove inherited timeout from server socket.
     # MT5 uses a non-blocking socket (ioctlsocket FIONBIO), so it may call recv()
     # before Python has replied, getting WSAEWOULDBLOCK. Python must stay connected
@@ -832,9 +801,19 @@ def handle_client(client_socket):
     print("="*60 + "\n")
     try:
         while not global_stop_event.is_set():
-            data = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-            if not data: 
-                print("Client disconnected.")
+            try:
+                data = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
+                if not data:
+                    print("Client disconnected (empty recv).")
+                    break
+            except ConnectionResetError:
+                print("Client forcibly closed connection.")
+                break
+            except BrokenPipeError:
+                print("Broken pipe during recv.")
+                break
+            except Exception as e:
+                print(f"Recv exception: {e}")
                 break
             
             # Update heartbeat time on any received data
@@ -865,20 +844,17 @@ def handle_client(client_socket):
 
             ohlc_df, features, extra_data = parse_mql5_data(data)
             
-            if extra_data and extra_data[0] is None and extra_data[1]: # MTF data only
+            if extra_data and extra_data[0] is None and extra_data[1]:  # Pure MTF packet
                 global_candle_details, global_mtf_data = extra_data
-                # For MTF mode, we don't have a single OHLC_DF or main features to plot on ax_main
-                # We need to decide what to display. For now, we'll just update global_mtf_data
-                # and let the visualizer handle it.
                 plot_update_queue.put({
-                    'ohlc': ohlc_data_history, # Keep previous OHLC for main plot
-                    'scores': pd.Series(ai_score_history, index=ohlc_data_history.index[-len(ai_score_history):]) if not ohlc_data_history.empty else pd.Series(),
-                    'set': 0, # N/A for MTF only
+                    'ohlc': ohlc_data_history,           # keep last main chart
+                    'scores': pd.Series(ai_score_history) if ai_score_history else pd.Series(),
+                    'set': 0,
                     'status': global_socket_status,
                     'symbol': global_mt5_symbol,
-                    'tf': global_mt5_timeframe,
-                    'snr': 0, # N/A for MTF only
-                    'candle_details': global_candle_details, # This will be from the last single TF update
+                    'tf': global_mt5_timeframe or "MTF",
+                    'snr': 0,
+                    'candle_details': global_candle_details,
                     'mtf_data': global_mtf_data
                 })
                 continue
@@ -905,7 +881,9 @@ def handle_client(client_socket):
                 response = f"{score:.4f}|{direction}|{max_hold}\n"
                 print(f"[DATA OUT] Sending response: Score={score:.4f}, Direction={direction}, MaxHold={max_hold}")
                 client_socket.sendall(response.encode('utf-8'))
-                time.sleep(0.1) # Response already includes \n
+            except BrokenPipeError:
+                print("[SOCKET] Broken pipe - Client disconnected during send")
+                break
             except Exception as e:
                 print(f"[DATA ERROR] Failed to predict or send response: {e}")
                 continue
@@ -947,29 +925,41 @@ def handle_client(client_socket):
             pass
         print("[SOCKET] Connection closed. Waiting for MT5 to reconnect...")
 
+# === REPLACE the whole socket_server() function with this ===
+
 def socket_server():
-    global last_heartbeat_time
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((HOST, PORT))
-    server.listen(1)
-    print(f"Listening on {HOST}:{PORT}")
-    server.settimeout(1.0)
+    """Main persistent server - handles both heartbeats and market data"""
+    global global_socket_status
+
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.settimeout(1.0)  # Allow clean shutdown
+
+    try:
+        server_socket.bind((HOST, PORT))
+        server_socket.listen(1)
+        print(f"[SOCKET] Server listening on {HOST}:{PORT} (single connection mode)")
+    except Exception as e:
+        print(f"[SOCKET ERROR] Bind failed: {e}")
+        return
 
     while not global_stop_event.is_set():
         try:
-            client, addr = server.accept()
-            print(f"Accepted connection from {addr}")
-            handler = threading.Thread(target=handle_client, args=(client,), daemon=True)
-            handler.start()
+            conn, addr = server_socket.accept()
+            print(f"[SOCKET] Accepted connection from {addr}")
+            global_socket_status = "CONNECTED"
+
+            # Use the robust handler you already have
+            handle_client(conn)   # <-- This is your good handler with parsing, prediction, etc.
+
         except socket.timeout:
-            # Check for heartbeat timeout if no connection is active
-            if global_socket_status == "DISCONNECTED" and (time.time() - last_heartbeat_time > 30):
-                print("[WARNING] No MT5 connection or heartbeat for 30 seconds. Is MT5 running?")
-                last_heartbeat_time = time.time() # Reset to avoid spamming
-            continue
-    server.close()
-    print("Server shut down.")
+            continue  # Normal for shutdown check
+        except Exception as e:
+            print(f"[SOCKET ACCEPT ERROR] {e}")
+            time.sleep(0.5)
+
+    server_socket.close()
+    print("[SOCKET] Server shut down.")
 
 def run_visualizer():
     viz = Visualizer(global_mt5_symbol)
