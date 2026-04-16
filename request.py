@@ -15,13 +15,12 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import matplotlib
-import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 import mplfinance as mpf
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "AI Brain Master 12.3 - Robust MTF Parser & Versioned Evolution"
+VERSION = "AI Brain Master 13.1 - Robust MTF Parser & Versioned Evolution"
 
 # --- Configuration ---
 CONFIG_FILE = "request_config.json"
@@ -39,6 +38,17 @@ def load_config():
     return {}
 
 config = load_config()
+VISUALIZER_CLOSE_STOPS_SERVER = bool(config.get("visualizer_close_stops_server", False))
+
+# Configure matplotlib backend BEFORE importing pyplot.
+MATPLOTLIB_BACKEND = config.get("visualizer_backend", "TkAgg")
+try:
+    matplotlib.use(MATPLOTLIB_BACKEND)
+except Exception as be:
+    print(f"!!! WARNING: Failed to use backend '{MATPLOTLIB_BACKEND}': {be}. Falling back to TkAgg.")
+    matplotlib.use("TkAgg")
+
+import matplotlib.pyplot as plt
 
 MT5_BASE_PATH = config.get("mt5_path", "/home/ubuntu/upload")
 HISTORY_CSV = None  # Will be set by find_history_file()
@@ -86,10 +96,15 @@ def find_history_file(base_path):
         HISTORY_CSV = manual_path
         return manual_path
     
-    # Final fallback - create the file in current directory if nothing found
-    print(f"!!! WARNING: History file not found. Will create new one at: {local_path}")
-    HISTORY_CSV = local_path
-    return local_path
+    # Final fallback - keep standardized location under MT5 base_path
+    standardized_path = os.path.join(base_path, "MT5_Set_History.csv")
+    try:
+        os.makedirs(base_path, exist_ok=True)
+    except Exception:
+        pass
+    print(f"!!! WARNING: History file not found. Will create new one at: {standardized_path}")
+    HISTORY_CSV = standardized_path
+    return standardized_path
 
 HISTORY_CSV = find_history_file(MT5_BASE_PATH)
 EA_PATH = os.path.join(MT5_BASE_PATH, "test2.mq5")
@@ -101,24 +116,26 @@ if not os.path.exists(HISTORY_CSV):
 HOST = '127.0.0.1'
 PORT = 8888
 BUFFER_SIZE = 16384
-BRAIN_FILE = "ai_brain.joblib"
-BRAIN_BACKUP = "ai_brain_backup.joblib"
-STATS_FILE = "cumulative_stats.json"
-STATS_BACKUP = "cumulative_stats_backup.json"
-MTF_DATA_LOG = "mtf_data_flow.log"
-PARSER_LOG = "parser_debug.log"  # NEW: Log parser errors
+
+# Standardize all runtime files under mt5_path only
+os.makedirs(MT5_BASE_PATH, exist_ok=True)
+
+BRAIN_FILE = os.path.join(MT5_BASE_PATH, "ai_brain.joblib")
+BRAIN_BACKUP = os.path.join(MT5_BASE_PATH, "ai_brain_backup.joblib")
+STATS_FILE = os.path.join(MT5_BASE_PATH, "cumulative_stats.json")
+STATS_BACKUP = os.path.join(MT5_BASE_PATH, "cumulative_stats_backup.json")
+MTF_DATA_LOG = os.path.join(MT5_BASE_PATH, "mtf_data_flow.log")
+PARSER_LOG = os.path.join(MT5_BASE_PATH, "parser_debug.log")
 
 # --- AI Evolution Config ---
-MODEL_DIR = "./ai_models"
-DATA_DIR = "./ai_data"
-HISTORY_DIR = "./evolution_history"
+MODEL_DIR = os.path.join(MT5_BASE_PATH, "ai_models")
+DATA_DIR = os.path.join(MT5_BASE_PATH, "ai_data")
+HISTORY_DIR = os.path.join(MT5_BASE_PATH, "evolution_history")
 VERSION_FILE = os.path.join(MODEL_DIR, "current_version.txt")
 for d in [MODEL_DIR, DATA_DIR, HISTORY_DIR]:
     os.makedirs(d, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-matplotlib.use('TkAgg')
 
 # --- Global Control & Data ---
 global_stop_event = threading.Event()
@@ -454,8 +471,13 @@ class Visualizer:
         ax_stop_btn = self.fig.add_axes([0.85, 0.02, 0.12, 0.04])
         self.btn_stop = Button(ax_stop_btn, 'STOP & SAVE', color='red', hovercolor='darkred')
         self.btn_stop.on_clicked(lambda e: global_stop_event.set())
-        self.fig.canvas.mpl_connect('close_event', lambda e: global_stop_event.set())
+        self.fig.canvas.mpl_connect('close_event', self._on_close_event)
         print("Enhanced visualizer window initialized with MTF button and data display.")
+
+    def _on_close_event(self, event):
+        # Keep socket server alive by default when UI window closes.
+        if VISUALIZER_CLOSE_STOPS_SERVER:
+            global_stop_event.set()
 
 
     def toggle_mtf_mode(self, event):
@@ -939,6 +961,18 @@ def handle_client(client_socket):
             while '\n' in recv_buffer and len(recv_buffer) < 256:
                 line, recv_buffer = recv_buffer.split('\n', 1)
                 process_payload(line)
+
+            # Safety flush for large payloads that may arrive without explicit terminator.
+            # Prevents parser stalls when MT5 sends full frames in non-standard chunks.
+            if len(recv_buffer) > 4000:
+                # Normal single-TF payload heuristic
+                if recv_buffer.count('|') >= 20:
+                    process_payload(recv_buffer)
+                    recv_buffer = ""
+                # MTF block heuristic: header + multiple newline-separated TF rows
+                elif recv_buffer.startswith("MTF_DATA\n") and recv_buffer.count('\n') >= 6:
+                    process_payload(recv_buffer)
+                    recv_buffer = ""
     except ConnectionResetError:
         print("[SOCKET] Client (MT5) forcibly closed the connection.")
     except socket.timeout:
@@ -990,9 +1024,25 @@ def socket_server():
     server_socket.close()
     print("[SOCKET] Server shut down.")
 
-def run_visualizer():
+def run_visualizer(stop_on_close=False):
+    plt.ion()
     viz = Visualizer(global_mt5_symbol)
     plt.show(block=False)  # Show window non-blocking
+    plt.pause(0.2)  # Give GUI backend time to realize the window
+    try:
+        # Make sure window is explicitly presented on macOS/Tk.
+        viz.fig.show()
+        manager = plt.get_current_fig_manager()
+        if hasattr(manager, "window"):
+            try:
+                manager.window.lift()
+                manager.window.attributes("-topmost", True)
+                manager.window.attributes("-topmost", False)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    missing_window_checks = 0
     
     while not global_stop_event.is_set():
         # FIX 2: Always process matplotlib events, even when no data arrives.
@@ -1001,9 +1051,17 @@ def run_visualizer():
         # Now we always call flush_events and plt.pause on every loop iteration.
         try:
             if not plt.fignum_exists(viz.fig.number):
+                # On macOS, some backends briefly report missing figure during init/focus changes.
+                missing_window_checks += 1
+                if missing_window_checks < 20:
+                    plt.pause(0.05)
+                    continue
                 print("Visualizer window closed by user.")
-                global_stop_event.set()
+                if stop_on_close:
+                    global_stop_event.set()
                 break
+            else:
+                missing_window_checks = 0
 
             # Try to get data from the queue (non-blocking with short timeout)
             try:
@@ -1048,15 +1106,24 @@ def main():
     server_thread.start()
     
     # macOS FIX: Run visualizer on main thread (required for Tkinter/matplotlib on macOS)
-    # The visualizer must be on the main thread, not a daemon thread
     try:
-        run_visualizer()
+        run_visualizer(stop_on_close=False)
     except KeyboardInterrupt:
-        pass
-    
+        global_stop_event.set()
+    except Exception as viz_err:
+        logger.error(f"Visualizer error: {viz_err}")
+
+    # If visualizer exits (e.g., no GUI/display), keep socket server alive.
+    if not global_stop_event.is_set():
+        print(">>> Visualizer closed. Socket server continues in headless mode. Press Ctrl+C to stop.")
+        try:
+            while not global_stop_event.is_set():
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            global_stop_event.set()
+
     # Cleanup
     print(">>> Shutting down...")
-    global_stop_event.set()
     time.sleep(1)
 
 if __name__ == "__main__":
