@@ -15,6 +15,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import matplotlib
+import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 import mplfinance as mpf
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
@@ -273,8 +274,7 @@ class AIBrain:
                 self.profit_factor = (wins / losses) if losses > 0 else float(wins)
                 
             self.brain_age = total
-            if self.last_evolved_pf == 0.0: self.last_evolved_pf = self.profit_factor
-            print(f">>> KPI REFRESH: Age={self.brain_age}, WR={self.lifetime_win_rate:.2f}%, PF={self.profit_factor:.2f}")
+      
         except Exception as e:
             logger.error(f"KPI recalculation failed: {e}")
 
@@ -449,113 +449,117 @@ class AIBrain:
 performance_tracker = TradePerformanceTracker(STATS_FILE, STATS_BACKUP)
 ai_brain = AIBrain(BRAIN_FILE, BRAIN_BACKUP, HISTORY_CSV)
 
-# --- Enhanced Visualizer with Detailed Candle Info ---
-class Visualizer:
-    def __init__(self, symbol_name):
-        self.symbol_name = symbol_name
-        self.mc = mpf.make_marketcolors(up='#00ff00', down='#ff0000', edge='inherit', wick='inherit', volume='gray', ohlc='inherit')
-        self.mpf_style = mpf.make_mpf_style(base_mpf_style='charles', marketcolors=self.mc, facecolor='black', figcolor='black', gridcolor='#2c2c2c', gridstyle='--', rc={'axes.edgecolor': 'white', 'ytick.color': 'white', 'xtick.color': 'white', 'axes.labelcolor': 'white', 'font.size': 8}, y_on_right=True)
-        self.fig = plt.figure(figsize=(14, 10), facecolor='black')
-        gs = self.fig.add_gridspec(5, 1, height_ratios=[3, 1, 1, 1, 0.5], hspace=0.3)
-        self.ax_main = self.fig.add_subplot(gs[0, 0], facecolor='black')
-        self.ax_ai = self.fig.add_subplot(gs[1, 0], facecolor='black', sharex=self.ax_main)
-        self.ax_kpi = self.fig.add_subplot(gs[2, 0], facecolor='black')
-        self.ax_mtf = self.fig.add_subplot(gs[3, 0], facecolor='black')
-        self.ax_stop = self.fig.add_subplot(gs[4, 0])
-        self.ax_stop.axis('off')
-        # Create MTF button
-        ax_mtf_btn = self.fig.add_axes([0.7, 0.02, 0.12, 0.04])
-        self.btn_mtf = Button(ax_mtf_btn, 'MTF: [Single]', color='gray', hovercolor='darkgray')
-        self.btn_mtf.on_clicked(self.toggle_mtf_mode)
-        # Create STOP button
-        ax_stop_btn = self.fig.add_axes([0.85, 0.02, 0.12, 0.04])
-        self.btn_stop = Button(ax_stop_btn, 'STOP & SAVE', color='red', hovercolor='darkred')
-        self.btn_stop.on_clicked(lambda e: global_stop_event.set())
-        self.fig.canvas.mpl_connect('close_event', self._on_close_event)
-        print("Enhanced visualizer window initialized with MTF button and data display.")
+class RealtimeVisualizer:
+    def __init__(self):
+        # Create a single figure with 4 subplots
+        self.fig, (self.ax_main, self.ax_ai, self.ax_kpi, self.ax_mtf) = plt.subplots(
+            4, 1, figsize=(12, 11), gridspec_kw={'height_ratios': [3.5, 1, 1.5, 1]}
+        )
+        
+        # 1. MT5 Styling (Black Background / Green & Red Candles)
+        mc = mpf.make_marketcolors(up='#00FF00', down='#FF0000', inherit=True)
+        self.mpf_style = mpf.make_mpf_style(
+            base_mpf_style='charles', 
+            marketcolors=mc, 
+            facecolor='#000000', 
+            edgecolor='#404040', 
+            gridcolor='#202020'
+        )
 
-    def _on_close_event(self, event):
-        # Keep socket server alive by default when UI window closes.
-        if VISUALIZER_CLOSE_STOPS_SERVER:
-            global_stop_event.set()
+        self.fig.patch.set_facecolor('#000000')
+        self.fig.canvas.manager.set_window_title('AI Brain Master Visualizer')
+        
+        # Initial Axis Configuration
+        for ax in [self.ax_main, self.ax_ai]:
+            ax.set_facecolor('#000000')
+            ax.tick_params(axis='both', colors='white', labelsize=8)
+            ax.yaxis.label.set_color('white')
 
+        self.ax_kpi.axis('off')
+        self.ax_mtf.axis('off')
+
+        # Buttons at Top
+        ax_mtf_toggle = self.fig.add_axes([0.7, 0.95, 0.1, 0.03])
+        self.button_mtf_toggle = Button(ax_mtf_toggle, 'Toggle MTF', color='#2e7d32', hovercolor='#388e3c')
+        self.button_mtf_toggle.on_clicked(self.toggle_mtf_mode)
+
+        ax_close = self.fig.add_axes([0.81, 0.95, 0.1, 0.03])
+        self.button_close = Button(ax_close, 'Close Server', color='#c62828', hovercolor='#d32f2f')
+        self.button_close.on_clicked(self.close_server)
+
+        self.fig.subplots_adjust(hspace=0.5, left=0.08, right=0.92, top=0.93, bottom=0.05)
+        plt.ion() 
+        self.fig.show()
 
     def toggle_mtf_mode(self, event):
-        """Toggle MTF mode when button is clicked"""
         global global_mtf_mode
         global_mtf_mode = not global_mtf_mode
-        if global_mtf_mode:
-            self.btn_mtf.label.set_text('MTF: [Multiple]')
-            self.btn_mtf.color = 'green'
-            self.btn_mtf.hovercolor = 'darkgreen'
-            print("\n" + "="*60)
-            print("[MTF] >>> MTF COLLECTION [Multiple] ACTIVATED <<<")
-            print("[MTF] Collecting: M1, M5, M15, M30, H1, H4, D1, W1, MN1")
-            print("[MTF] Mode: [Multiple] - PULLING ALL TIMEFRAMES")
-            print("="*60 + "\n")
-        else:
-            self.btn_mtf.label.set_text('MTF: [Single]')
-            self.btn_mtf.color = 'gray'
-            self.btn_mtf.hovercolor = 'darkgray'
-            print("\n" + "="*60)
-            print("[MTF] >>> MTF COLLECTION [Single] DEACTIVATED <<<")
-            print("[MTF] Mode: [Single] - BACK TO ACTIVE TIMEFRAME ONLY")
-            print("="*60 + "\n")
-        self.fig.canvas.draw_idle()
+        print(f"[UI] MTF Mode: {'ON' if global_mtf_mode else 'OFF'}")
+
+    def close_server(self, event):
+        global_stop_event.set()
+        if VISUALIZER_CLOSE_STOPS_SERVER:
+            plt.close(self.fig)
+            sys.exit(0)
 
     def update_plot(self, ohlc_df, ai_scores, current_set, status, symbol, tf, snr_weight, candle_details, mtf_data):
-        if not plt.fignum_exists(self.fig.number): return
-        self.fig.suptitle(f'{symbol} ({tf}) - Status: {status} - Set: {current_set} - SnR Weight: {snr_weight} - AI Version: {ai_brain.current_version}', color='white', y=0.98)
-        if not ohlc_df.empty:
-            self.ax_main.clear()
-            self.ax_ai.clear()
-            
-            if len(ai_scores) < len(ohlc_df):
-                padded_scores = [np.nan] * (len(ohlc_df) - len(ai_scores)) + list(ai_scores)
-            else:
-                padded_scores = list(ai_scores)[-len(ohlc_df):]
-            
-            apds = [mpf.make_addplot(padded_scores, color='#00ffff', ax=self.ax_ai, width=1.2)]
-            
-            mpf.plot(ohlc_df, type='candle', style=self.mpf_style, ax=self.ax_main, addplot=apds, show_nontrading=False, datetime_format='%H:%M')
-            
-            self.ax_main.axhline(ohlc_df['Close'].iloc[-1], color='white', linestyle='-', linewidth=0.5, alpha=0.7)
-            self.ax_ai.set_ylabel('AI Score', color='white')
-            self.ax_ai.set_ylim(0, 1)
-            
-            # --- Display Detailed Candle Information with Timestamp and Data Type ---
-            self.ax_kpi.clear()
-            self.ax_kpi.axis('off')
-            kpi_text = "LATEST CANDLE DETAILS:\n"
-            data_type = candle_details.get('data_type', 'UNKNOWN')
-            candle_pos = candle_details.get('candle_position', 0)
-            data_color_indicator = "[LIVE]" if data_type == "LIVE" else "[HIST]"
-            kpi_text += f"Timestamp: {candle_details.get('time', 'N/A')} {data_color_indicator}\n"
-            kpi_text += f"Position: {candle_pos}/100 | Symbol: {candle_details.get('symbol', 'N/A')} | TF: {candle_details.get('timeframe', 'N/A')}\n"
-            kpi_text += f"Range: {candle_details.get('range', 0):.4f} pips\n"
-            kpi_text += "\nTL STRATEGY PERFORMANCE:\n"
-            for i, d in performance_tracker.stats.items():
-                wr = (d['wins']/d['trades']*100) if d['trades']>0 else 0.0
-                kpi_text += f"{d['name']:<15}: {d['trades']:>3} Trades | {wr:>5.1f}% Win Rate\n"
-            # Use different colors for live vs historical
-            text_color = '#00ff00' if data_type == "LIVE" else '#ffff00'  # Green for live, yellow for historical
-            self.ax_kpi.text(0.05, 0.5, kpi_text, color=text_color, fontsize=8, family='monospace', va='center')
-            
-            # --- Display Multi-Timeframe Data ---
-            self.ax_mtf.clear()
-            self.ax_mtf.axis('off')
-            mtf_text = "MULTI-TIMEFRAME DATA FLOW:\n"
-            if mtf_data:
-                for tf_name, data in mtf_data.items():
-                    mtf_text += f"{tf_name:<8} | Candles: {data.get('candles', 0):<3} | Last: O:{data.get('open', 0):.2f} C:{data.get('close', 0):.2f}\n"
-            else:
-                mtf_text += "Waiting for MTF data from MT5...\n"
-            self.ax_mtf.text(0.05, 0.5, mtf_text, color='#00ffff', fontsize=8, family='monospace', va='center')
-            
+        if not plt.fignum_exists(self.fig.number) or ohlc_df.empty: 
+            return
+
+        self.ax_main.clear()
+        self.ax_ai.clear()
+        self.ax_kpi.clear()
+        self.ax_mtf.clear()
+
+        # Score Alignment
+        padded_scores = [np.nan] * (len(ohlc_df) - len(ai_scores)) + list(ai_scores)
+        apds = [mpf.make_addplot(padded_scores, color='#00ffff', ax=self.ax_ai, width=1.2)]
+        
+        # MAIN CHART (Force ax=self.ax_main to prevent second window)
+        mpf.plot(ohlc_df, type='candle', style=self.mpf_style, ax=self.ax_main, addplot=apds)
+
+        # MT5 Live Price Tag
+        last_price = ohlc_df['Close'].iloc[-1]
+        self.ax_main.axhline(last_price, color='white', linestyle=':', linewidth=0.8)
+        self.ax_main.text(1.01, last_price, f' {last_price:.5f} ', 
+                          transform=self.ax_main.get_yaxis_transform(),
+                          color='white', backgroundcolor='#FF0000', 
+                          va='center', fontweight='bold', fontsize=9)
+
+        # --- RESTORE KPI DISPLAY (Performance & Candle Details) ---
+        self.ax_kpi.axis('off')
+        data_type = candle_details.get('data_type', 'UNKNOWN')
+        text_color = '#00FF00' if data_type == "LIVE" else '#FFFF00'
+        
+        kpi_text = f"LATEST CANDLE [{data_type}]: {candle_details.get('time', 'N/A')}\n"
+        kpi_text += f"Symbol: {symbol} | TF: {tf} | Range: {candle_details.get('range', 0):.4f} pips\n"
+        kpi_text += f"SnR Weight: {snr_weight} | Set Count: {current_set}\n"
+        kpi_text += "\nTL STRATEGY PERFORMANCE:\n"
+        
+        # Iterate through the tracker stats from your script
+        for i, d in performance_tracker.stats.items():
+            wr = (d['wins']/d['trades']*100) if d['trades'] > 0 else 0.0
+            kpi_text += f"{d['name']:<15}: {d['trades']:>3} Trades | {wr:>5.1f}% Win Rate\n"
+        
+        self.ax_kpi.text(0.01, 0.5, kpi_text, color=text_color, fontsize=8, family='monospace', va='center')
+
+        # --- MTF FLOW DISPLAY ---
+        self.ax_mtf.axis('off')
+        mtf_text = "MULTI-TIMEFRAME DATA FLOW:\n"
+        if mtf_data:
+            for tf_name, data in mtf_data.items():
+                mtf_text += f"{tf_name:<8} | C: {data.get('candles', 0):<3} | Last: {data.get('close', 0):.5f}\n"
+        else:
+            mtf_text += "Waiting for MTF data flow..."
+        
+        self.ax_mtf.text(0.01, 0.5, mtf_text, color='#00ffff', fontsize=8, family='monospace', va='center')
+
+        self.fig.suptitle(f'{symbol} ({tf}) | {status} | AI v{ai_brain.current_version}', color='#00FF00', y=0.98)
+        self.ax_ai.set_ylim(0, 1)
+        
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
-        plt.pause(0.001)
-
+        
 def safe_float(val, default=0.0):
     """Safely convert value to float"""
     try:
@@ -575,7 +579,7 @@ def safe_bool(val, default=False):
     try:
         return bool(int(float(val)))
     except:
-        return default
+        return False
 
 def parse_single_mtf_message(mtf_msg_string):
     """Parses a single MTF message string from MT5."""
@@ -709,10 +713,12 @@ def parse_mql5_data(data_string):
             'set_magnitude', 'bars_duration', 'dist_from_be', 'active_TL_option',
             'dynamic_TL_slope', 'dynamic_TL_distance_current_price',
             'channel_top_distance_current_price', 'channel_bottom_distance_current_price',
-            'channel_width', 'rejection_candle_total_range', 'rejection_candle_body_size',
-            'rejection_candle_upper_wick_size', 'rejection_candle_lower_wick_size',
-            'rejection_candle_is_large_relative_to_average', 'rejection_candle_volume',
-            'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4'
+            'channel_width', 'rejection_candle_total_range',
+            'rejection_candle_body_size', 'rejection_candle_upper_wick_size',
+            'rejection_candle_lower_wick_size', 'rejection_candle_is_large_relative_to_average',
+            'rejection_candle_volume', 'bearish_sequence_length',
+            'trend_m15', 'trend_h1', 'trend_h4',
+            'snr_weight', 'is_at_snr', 'tp_m15', 'tp_h1'
         ]
 
         for i, key in enumerate(mt5_feature_keys):
@@ -721,7 +727,7 @@ def parse_mql5_data(data_string):
                 val = parts[idx].strip()
                 if key == 'rejection_candle_is_large_relative_to_average':
                     features[key] = safe_bool(val)
-                elif key in ['set_magnitude', 'bars_duration', 'active_TL_option', 'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4']:
+                elif key in ['set_magnitude', 'bars_duration', 'active_TL_option', 'bearish_sequence_length', 'trend_m15', 'trend_h1', 'trend_h4', 'snr_weight', 'is_at_snr']:
                     features[key] = safe_int(val)
                 else:
                     features[key] = safe_float(val)
@@ -931,21 +937,41 @@ def handle_client(client_socket):
             'mtf_data': global_mtf_data
         })
     try:
+        # Change from None to a short timeout so we can flush the buffer
+        client_socket.settimeout(0.2) 
+        
         while not global_stop_event.is_set():
             try:
                 chunk = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
                 if not chunk:
-                    print("Client disconnected (empty recv).")
                     break
-            except ConnectionResetError:
-                print("Client forcibly closed connection.")
+                recv_buffer += chunk
+                last_heartbeat_time = time.time()
+                # print(f"[DATA IN] Received {len(chunk)} bytes") # Debugging
+            except socket.timeout:
+                # FIX: If the socket times out (0.2s of silence), MT5 is done sending.
+                # If we have data in the buffer, process it NOW instead of waiting for a TF change.
+                if recv_buffer.strip():
+                    process_payload(recv_buffer)
+                    recv_buffer = ""
+                continue
+            except (ConnectionResetError, BrokenPipeError):
                 break
-            except BrokenPipeError:
-                print("Broken pipe during recv.")
-                break
-            except Exception as e:
-                print(f"Recv exception: {e}")
-                break
+            
+            # --- Keep your existing framing logic below ---
+            while '\x00' in recv_buffer:
+                packet, recv_buffer = recv_buffer.split('\x00', 1)
+                process_payload(packet)
+
+            while '\n' in recv_buffer and len(recv_buffer) < 256:
+                line, recv_buffer = recv_buffer.split('\n', 1)
+                process_payload(line)
+
+            # Your safety flush logic remains active
+            if len(recv_buffer) > 4000:
+                if recv_buffer.count('|') >= 20 or (recv_buffer.startswith("MTF_DATA\n") and recv_buffer.count('\n') >= 6):
+                    process_payload(recv_buffer)
+                    recv_buffer = ""
             
             # Update heartbeat time on any received data
             last_heartbeat_time = time.time()
@@ -979,171 +1005,81 @@ def handle_client(client_socket):
         # Should not happen since we set timeout=None, but handle gracefully
         print("[SOCKET WARNING] Client socket timed out unexpectedly. MT5 may have disconnected.")
     except Exception as e:
-        print(f"[SOCKET ERROR] Error in client handler: {e}")
+        print(f"[SOCKET ERROR] An unexpected error occurred in handle_client: {e}")
     finally:
         global_socket_status = "DISCONNECTED"
+        print("\n" + "="*60)
+        print("[STATE] <<< PYTHON DISCONNECTED FROM MT5 >>>")
+        print("="*60 + "\n")
         try:
+            client_socket.shutdown(socket.SHUT_RDWR)
             client_socket.close()
-        except Exception:
-            pass
-        print("[SOCKET] Connection closed. Waiting for MT5 to reconnect...")
+        except OSError as e:
+            print(f"Error during socket shutdown/close: {e}")
 
-# === REPLACE the whole socket_server() function with this ===
-
-def socket_server():
-    """Main persistent server - handles both heartbeats and market data"""
+def socket_listener():
     global global_socket_status
-
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.settimeout(1.0)  # Allow clean shutdown
-
-    try:
-        server_socket.bind((HOST, PORT))
-        server_socket.listen(1)
-        print(f"[SOCKET] Server listening on {HOST}:{PORT} (single connection mode)")
-    except Exception as e:
-        print(f"[SOCKET ERROR] Bind failed: {e}")
-        return
+    server_socket.settimeout(1.0) # Timeout for accept to allow checking global_stop_event
+    server_socket.bind((HOST, PORT))
+    server_socket.listen(5)
+    print(f"Listening on {HOST}:{PORT}")
 
     while not global_stop_event.is_set():
         try:
-            conn, addr = server_socket.accept()
-            print(f"[SOCKET] Accepted connection from {addr}")
-            global_socket_status = "CONNECTED"
-
-            # Use the robust handler you already have
-            handle_client(conn)   # <-- This is your good handler with parsing, prediction, etc.
-
+            client_socket, addr = server_socket.accept()
+            print(f"Accepted connection from {addr}")
+            client_handler = threading.Thread(target=handle_client, args=(client_socket,))
+            client_handler.start()
         except socket.timeout:
-            continue  # Normal for shutdown check
+            continue # Loop again, check global_stop_event
         except Exception as e:
-            print(f"[SOCKET ACCEPT ERROR] {e}")
-            time.sleep(0.5)
+            print(f"Error accepting connection: {e}")
+            time.sleep(1) # Wait a bit before retrying
 
+    print("Socket listener shutting down.")
     server_socket.close()
-    print("[SOCKET] Server shut down.")
 
-def run_visualizer(stop_on_close=False):
-    plt.ion()
-    viz = Visualizer(global_mt5_symbol)
-    plt.show(block=False)  # Show window non-blocking
-    plt.pause(0.2)  # Give GUI backend time to realize the window
-    try:
-        # Make sure window is explicitly presented on macOS/Tk.
-        viz.fig.show()
-        manager = plt.get_current_fig_manager()
-        if hasattr(manager, "window"):
-            try:
-                manager.window.lift()
-                manager.window.attributes("-topmost", True)
-                manager.window.attributes("-topmost", False)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    missing_window_checks = 0
+def start_server():
+    global global_socket_status, last_heartbeat_time, global_mt5_symbol, global_mt5_timeframe
+
+    listener_thread = threading.Thread(target=socket_listener, daemon=True)
+    listener_thread.start()
+    
+    # Start the visualizer in the main thread (ONLY ONCE!)
+    visualizer = RealtimeVisualizer()
     
     while not global_stop_event.is_set():
-        # FIX 2: Always process matplotlib events, even when no data arrives.
-        # The previous code had `continue` inside the inner except queue.Empty,
-        # which skipped flush_events/plt.pause and made the window unresponsive.
-        # Now we always call flush_events and plt.pause on every loop iteration.
         try:
-            if not plt.fignum_exists(viz.fig.number):
-                # On macOS, some backends briefly report missing figure during init/focus changes.
-                missing_window_checks += 1
-                if missing_window_checks < 20:
-                    plt.pause(0.05)
-                    continue
-                print("Visualizer window closed by user.")
-                if stop_on_close:
-                    global_stop_event.set()
-                break
-            else:
-                missing_window_checks = 0
-
-            # Try to get data from the queue (non-blocking with short timeout)
-            try:
-                data = plot_update_queue.get(block=False)
-                viz.update_plot(
-                    data['ohlc'],
-                    data['scores'],
-                    data['set'],
-                    data['status'],
-                    data['symbol'],
-                    data['tf'],
-                    data['snr'],
-                    data.get('candle_details', {}),
-                    data.get('mtf_data', {})
-                )
-            except queue.Empty:
-                # No new data - that's fine, just keep the window responsive
-                pass
-
-            # ALWAYS flush events and pause so matplotlib can process
-            # button clicks, window moves, and other GUI events
-            viz.fig.canvas.flush_events()
-            plt.pause(0.05)  # 50ms pause - enough for GUI responsiveness
-
+            # Try to get data from the queue, with a small timeout
+            plot_data = plot_update_queue.get(timeout=0.1)
+            visualizer.update_plot(
+                plot_data['ohlc'],
+                plot_data['scores'],
+                plot_data['set'],
+                plot_data['status'],
+                plot_data['symbol'],
+                plot_data['tf'],
+                plot_data['snr'],
+                plot_data['candle_details'],
+                plot_data['mtf_data']
+            )
+        except queue.Empty:
+            # No data in queue, continue loop
+            pass
         except Exception as e:
-            print(f"Visualizer update error: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error in visualizer update loop: {e}")
             break
+        
+        # Check for heartbeat timeout
+        if time.time() - last_heartbeat_time > 30 and global_socket_status == "CONNECTED":
+            print("!!! WARNING: No heartbeat from MT5 for 30 seconds. MT5 might be disconnected. Resetting connection status.")
+            global_socket_status = "DISCONNECTED"
 
-    plt.close(viz.fig)
-    print("Visualizer shut down.")
-
-def main():
-    print(f">>> {VERSION}")
-    print(f">>> BRAIN FILE: {BRAIN_FILE}")
-    print(f">>> HISTORY CSV: {HISTORY_CSV}")
-    print(f">>> Starting AI Brain Server on {HOST}:{PORT}...")
-    
-    # Start socket server in background thread
-    server_thread = threading.Thread(target=socket_server, daemon=True)
-    server_thread.start()
-    
-    # macOS FIX: Run visualizer on main thread (required for Tkinter/matplotlib on macOS)
-    try:
-        run_visualizer(stop_on_close=False)
-    except KeyboardInterrupt:
-        global_stop_event.set()
-    except Exception as viz_err:
-        logger.error(f"Visualizer error: {viz_err}")
-
-    # If visualizer exits (e.g., no GUI/display), keep socket server alive.
-    if not global_stop_event.is_set():
-        print(">>> Visualizer closed. Socket server continues in headless mode. Press Ctrl+C to stop.")
-        try:
-            while not global_stop_event.is_set():
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            global_stop_event.set()
-
-    # Cleanup
-    print(">>> Shutting down...")
-    time.sleep(1)
+    print("Main application loop finished.")
+    plt.close(visualizer.fig)
+    sys.exit(0)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n>>> Interrupted by user.")
-        global_stop_event.set()
-    except Exception as e:
-        print(f">>> Fatal error: {e}")
-        global_stop_event.set()
-    
-    # Final summary
-    print("\n" + "="*80)
-    print("MASTER AI PERFORMANCE SUMMARY - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    print("="*80)
-    print("TL Strategy Mode          | Trades   | Wins   | Win Rate   | Avg AI Score")
-    print("-"*80)
-    for mode, stats in performance_tracker.stats.items():
-        wr = (stats['wins'] / stats['trades'] * 100) if stats['trades'] > 0 else 0.0
-        print(f"{mode:<24} | {stats['trades']:<8} | {stats['wins']:<6} | {wr:>6.1f}% | {0.00:>10.2f}")
-    print("="*80)
-    print("\n>>> System gracefully shut down.")
+    start_server()
