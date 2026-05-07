@@ -11,10 +11,30 @@ import joblib
 import queue
 import shutil
 import warnings
+import inspect
 from datetime import datetime
 import pandas as pd
 import numpy as np
+
+# FIX 7: Configure matplotlib backend BEFORE importing pyplot (moved here, before any plt import).
+# Load config minimally just to get the backend setting.
+_CONFIG_FILE_EARLY = "request_config.json"
+_early_cfg = {}
+if os.path.exists(_CONFIG_FILE_EARLY):
+    try:
+        with open(_CONFIG_FILE_EARLY, 'r') as _f:
+            _early_cfg = json.load(_f)
+    except Exception:
+        pass
+
 import matplotlib
+MATPLOTLIB_BACKEND = _early_cfg.get("visualizer_backend", "TkAgg")
+try:
+    matplotlib.use(MATPLOTLIB_BACKEND)
+except Exception as _be:
+    print(f"!!! WARNING: Failed to use backend '{MATPLOTLIB_BACKEND}': {_be}. Falling back to TkAgg.")
+    matplotlib.use("TkAgg")
+
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 import mplfinance as mpf
@@ -22,6 +42,18 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 warnings.filterwarnings("ignore", category=UserWarning)
 VERSION = "AI Brain Master 13.1 - Robust MTF Parser & Versioned Evolution"
+
+MEMORY_FILE = "memory.json"
+
+def load_memory():
+    if not os.path.exists(MEMORY_FILE):
+        return []
+    with open(MEMORY_FILE, "r") as f:
+        return json.load(f)
+
+def save_memory(data):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(data, f)
 
 # --- Configuration ---
 CONFIG_FILE = "request_config.json"
@@ -40,16 +72,6 @@ def load_config():
 
 config = load_config()
 VISUALIZER_CLOSE_STOPS_SERVER = bool(config.get("visualizer_close_stops_server", False))
-
-# Configure matplotlib backend BEFORE importing pyplot.
-MATPLOTLIB_BACKEND = config.get("visualizer_backend", "TkAgg")
-try:
-    matplotlib.use(MATPLOTLIB_BACKEND)
-except Exception as be:
-    print(f"!!! WARNING: Failed to use backend '{MATPLOTLIB_BACKEND}': {be}. Falling back to TkAgg.")
-    matplotlib.use("TkAgg")
-
-import matplotlib.pyplot as plt
 
 MT5_BASE_PATH = config.get("mt5_path", "/home/ubuntu/upload")
 HISTORY_CSV = None  # Will be set by find_history_file()
@@ -198,7 +220,8 @@ class TradePerformanceTracker:
             with open(self.stats_file, 'w') as f:
                 json.dump(self.stats, f)
             shutil.copy2(self.stats_file, self.stats_backup)
-        except: pass
+        except Exception as e:
+            logger.warning(f"[TradePerformanceTracker] Failed to save stats: {e}")
 
 # --- AI Brain Class ---
 class AIBrain:
@@ -306,7 +329,9 @@ class AIBrain:
         if not os.path.exists(self.history_csv): return
         logger.info(f">>> AI DEEP LEARNING: Analyzing {self.brain_age} historical setups...")
         try:
-            df = pd.read_csv(self.history_csv)
+            # FIX 5: Use same encoding as _recalculate_kpis() to avoid UnicodeDecodeError
+            # on Windows-generated MT5 CSV files.
+            df = pd.read_csv(self.history_csv, encoding='ansi')
       
             if 'feat_set_magnitude' in df.columns and 'feat_bars_duration' in df.columns:
                 df['pattern_weight'] = 1.0
@@ -345,21 +370,30 @@ class AIBrain:
         major, minor, patch = map(int, self.current_version.split('.'))
         patch += 1
         new_version = f"{major}.{minor}.{patch}"
+
+        # FIX 9: Use inspect to get the real .py source path — __file__ can resolve
+        # to a compiled .pyc in some environments, making backups unreadable.
+        try:
+            _this_file = inspect.getfile(lambda: None)
+            if _this_file.endswith(('.pyc', '.pyo')):
+                _this_file = _this_file[:-1]  # strip 'c'/'o' → .py
+        except Exception:
+            _this_file = os.path.abspath(__file__)
         
         # Backup current Python script with version
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_name = f"request_v{self.current_version}_{timestamp}.py"
-            shutil.copy2(__file__, os.path.join(HISTORY_DIR, backup_name))
+            shutil.copy2(_this_file, os.path.join(HISTORY_DIR, backup_name))
             logger.info(f"Backed up current script to {backup_name}")
         except Exception as e:
             logger.error(f"Self-evolution backup failed: {e}")
 
         # Save new version of Python script (for manual switch)
         new_script_name = f"request_v{new_version}.py"
-        new_script_path = os.path.join(os.path.dirname(__file__), new_script_name)
+        new_script_path = os.path.join(os.path.dirname(_this_file), new_script_name)
         try:
-            shutil.copy2(__file__, new_script_path)
+            shutil.copy2(_this_file, new_script_path)
             logger.info(f"New Python script version created: {new_script_path}")
         except Exception as e:
             logger.error(f"Failed to create new Python script version: {e}")
@@ -427,10 +461,12 @@ class AIBrain:
             ml_prob = 0.5
             max_hold = 20
             try:
+                # FIX 4: Always build feat_vec first so the regressor block can use it
+                # even if the classifier block was skipped.
+                feature_names = self.get_feature_cols()
+                feat_vec = [features.get(f, 0) for f in feature_names]
                 if hasattr(self.model, "classes_"):
                     # Ensure feature vector matches training features
-                    feature_names = self.get_feature_cols()
-                    feat_vec = [features.get(f, 0) for f in feature_names]
                     ml_prob = self.model.predict_proba([feat_vec])[0][1]
                 if hasattr(self.regressor, "n_features_in_"):
                      max_hold = int(self.regressor.predict([feat_vec])[0])
@@ -497,10 +533,13 @@ class RealtimeVisualizer:
         print(f"[UI] MTF Mode: {'ON' if global_mtf_mode else 'OFF'}")
 
     def close_server(self, event):
+        # FIX 8: Always signal the stop event so the socket listener thread exits cleanly.
+        # Without this, the listener keeps running even after the plot closes, leaving
+        # the process hanging. VISUALIZER_CLOSE_STOPS_SERVER now only controls whether
+        # the plot is forcibly closed (it always is on button click) vs. graceful exit.
         global_stop_event.set()
-        if VISUALIZER_CLOSE_STOPS_SERVER:
-            plt.close(self.fig)
-            sys.exit(0)
+        plt.close(self.fig)
+        sys.exit(0)
 
     def update_plot(self, ohlc_df, ai_scores, current_set, status, symbol, tf, snr_weight, candle_details, mtf_data):
         if not plt.fignum_exists(self.fig.number) or ohlc_df.empty: 
@@ -533,7 +572,7 @@ class RealtimeVisualizer:
         
         kpi_text = f"LATEST CANDLE [{data_type}]: {candle_details.get('time', 'N/A')}\n"
         kpi_text += f"Symbol: {symbol} | TF: {tf} | Range: {candle_details.get('range', 0):.4f} pips\n"
-        kpi_text += f"SnR Weight: {snr_weight} | Set Count: {current_set}\n"
+        kpi_text += f"SnR Weight: {snr_weight} | Set Count: {current_set} | Parse Errors: {parse_error_count}\n"
         kpi_text += "\nTL STRATEGY PERFORMANCE:\n"
         
         # Iterate through the tracker stats from your script
@@ -585,24 +624,49 @@ def parse_single_mtf_message(mtf_msg_string):
     """Parses a single MTF message string from MT5."""
     try:
         parts = mtf_msg_string.split('|')
-        if len(parts) < 6: # OHLC + Symbol + Timestamp + SetCount + Timeframe + Features
+        if len(parts) < 6:
             log_parser_error("MTF_PARSE_ERROR", mtf_msg_string, "Not enough parts in single MTF message")
             return None
 
+        # ===== OHLC =====
         ohlc_str = parts[0]
         raw_history = ohlc_str.split(';')
         ohlc_list = []
+
         for candle in raw_history:
-            if not candle or candle.strip() == '': continue
+            if not candle or candle.strip() == '':
+                continue
             try:
                 o, h, l, c = map(float, candle.split(','))
                 ohlc_list.append([o, h, l, c])
             except ValueError:
-                continue # Skip malformed candles
+                continue
         
-        if not ohlc_list: return None
+        if not ohlc_list:
+            return None
 
         tf_name = parts[4]
+        features = parts[5:]
+        
+        print("TF:", tf_name, "LAST 7:", features[-7:])
+
+        # ===== NEW: GEOMETRY EXTRACTION =====
+        slope = dist_A = position = sitting = mirror = gap = 0.0
+        direction = 0
+
+        if len(features) >= 7:
+            try:
+                slope     = float(features[-7])
+                dist_A    = float(features[-6])
+                position  = float(features[-5])
+                sitting   = float(features[-4])
+                direction = int(features[-3])
+                mirror    = float(features[-2])
+                gap       = float(features[-1])
+            except:
+                pass
+
+        # ===== RETURN FULL STRUCTURE =====
         return {
             'tf_name': tf_name,
             'candles': len(ohlc_list),
@@ -610,8 +674,17 @@ def parse_single_mtf_message(mtf_msg_string):
             'high': ohlc_list[-1][1],
             'low': ohlc_list[-1][2],
             'close': ohlc_list[-1][3],
-            'features': parts[5:] # Remaining parts are features
+
+            # ✅ ADD THESE (CRITICAL)
+            'slope': slope,
+            'dist_A': dist_A,
+            'position': position,
+            'sitting': sitting,
+            'direction': direction,
+            'mirror': mirror,
+            'gap': gap
         }
+
     except Exception as e:
         log_parser_error("MTF_PARSE_ERROR", mtf_msg_string, str(e))
         return None
@@ -640,14 +713,42 @@ def parse_mql5_data(data_string):
                 parsed_tf = parse_single_mtf_message(msg)
                 if parsed_tf and parsed_tf.get('tf_name'):
                     parsed_mtf_data[parsed_tf['tf_name']] = {
-                        'candles': parsed_tf['candles'],
-                        'open': parsed_tf.get('open', 0),
-                        'high': parsed_tf.get('high', 0),
-                        'low': parsed_tf.get('low', 0),
-                        'close': parsed_tf.get('close', 0)
-                    }
+                    'candles': parsed_tf['candles'],
+                    'open': parsed_tf.get('open', 0),
+                    'high': parsed_tf.get('high', 0),
+                    'low': parsed_tf.get('low', 0),
+                    'close': parsed_tf.get('close', 0),
+
+                    # ===== GEOMETRY (NEW - REQUIRED) =====
+                    'slope': parsed_tf.get('slope', 0),
+                    'dist_A': parsed_tf.get('dist_A', 0),
+                    'position': parsed_tf.get('position', 0),
+                    'sitting': parsed_tf.get('sitting', 0),
+                    'direction': parsed_tf.get('direction', 0),
+                    'mirror': parsed_tf.get('mirror', 0),
+                    'gap': parsed_tf.get('gap', 0)
+                }
 
             global_mtf_data = parsed_mtf_data
+            # ===== MTF SIGNAL ENGINE =====
+            if len(parsed_mtf_data) > 0:
+
+                high = [v for k,v in parsed_mtf_data.items() if k in ["H4","H1"]]
+                mid  = [v for k,v in parsed_mtf_data.items() if k in ["M30","M15"]]
+                low  = [v for k,v in parsed_mtf_data.items() if k in ["M5","M1"]]
+
+                def avg(arr, key):
+                    vals = [x.get(key,0) for x in arr]
+                    return sum(vals)/len(vals) if vals else 0
+
+                high_slope = avg(high, "slope")
+                mid_gap    = avg(mid, "gap")
+                low_sit    = avg(low, "sitting")
+
+                if abs(high_slope) > 1e-6 and abs(mid_gap) < 0.003 and low_sit > 0.6:
+                    print("🔥 MTF SIGNAL")
+                else:
+                    print("no mtf signal")
             print(f"[MTF] Received data for {len(parsed_mtf_data)} timeframes: {list(parsed_mtf_data.keys())}")
             return None, None, (global_candle_details or {}, global_mtf_data)
 
@@ -818,16 +919,24 @@ def simulate_trades_on_ohlc(ohlc_df, base_features):
         print(f">>> [SIM] Bootstrapped AI with {simulated_count} simulated trades from OHLC history. Brain age: {ai_brain.brain_age}")
 
 
+# In request.py - modify handle_client function
+
 def handle_client(client_socket):
-    global global_mt5_symbol, global_mt5_timeframe, global_socket_status, ohlc_data_history, ai_score_history, global_candle_details, global_mtf_data, global_mtf_mode, last_heartbeat_time
+    global global_mt5_symbol, global_mt5_timeframe, global_socket_status
+    global ohlc_data_history, ai_score_history, global_candle_details
+    global global_mtf_data, global_mtf_mode, last_heartbeat_time
+
     global_socket_status = "CONNECTED"
-    client_socket.settimeout(None)  # Blocking receive - keeps connection alive
-    # FIX 1: Remove inherited timeout from server socket.
-    # MT5 uses a non-blocking socket (ioctlsocket FIONBIO), so it may call recv()
-    # before Python has replied, getting WSAEWOULDBLOCK. Python must stay connected
-    # and keep the socket alive. Setting timeout=None makes Python's recv() block
-    # indefinitely, keeping the connection alive between MT5 ticks.
-    client_socket.settimeout(None)
+    
+    # IMPORTANT: Send ACK immediately so MT5 knows connection is live
+    try:
+        client_socket.sendall(b"ACK\n")
+        print("[SOCKET] Sent ACK to MT5 - connection ready")
+    except Exception as e:
+        print(f"[SOCKET] Failed to send ACK: {e}")
+        return
+    
+    client_socket.settimeout(0.2)
     print("\n" + "="*60)
     print("[STATE] >>> PYTHON CONNECTED TO MT5 <<<")
     print("[STATE] Waiting for market data from MT5...")
@@ -839,7 +948,6 @@ def handle_client(client_socket):
         global global_mt5_symbol, global_mt5_timeframe, global_socket_status
         global ohlc_data_history, ai_score_history, global_candle_details, global_mtf_data
         global global_mtf_mode, last_heartbeat_time
-
         data = payload.replace('\x00', '').strip()
         if not data:
             return
@@ -917,6 +1025,9 @@ def handle_client(client_socket):
             print(f"[DATA ERROR] Failed to predict or send response: {e}")
             return
 
+        # FIX 2 & 3: ohlc_data_history and ai_score_history are declared global at the
+        # top of process_payload (via the outer handle_client globals block), so assignments
+        # here correctly update the module-level variables rather than creating locals.
         ohlc_data_history = ohlc_df
         ai_score_history.append(score)
         if len(ai_score_history) > len(ohlc_data_history):
@@ -936,10 +1047,15 @@ def handle_client(client_socket):
             'candle_details': global_candle_details,
             'mtf_data': global_mtf_data
         })
+
+    # FIX 1: Removed duplicate receive loop. Only ONE loop below handles all framing.
+    # The original code had two loops; the second caused UnboundLocalError on `chunk`
+    # because it tried to use `chunk` from the timeout-exception path where it was
+    # never assigned, and re-appended to recv_buffer redundantly.
     try:
-        # Change from None to a short timeout so we can flush the buffer
-        client_socket.settimeout(0.2) 
-        
+        # Short timeout so we can flush the buffer when MT5 goes quiet between packets.
+        client_socket.settimeout(0.2)
+
         while not global_stop_event.is_set():
             try:
                 chunk = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
@@ -949,34 +1065,15 @@ def handle_client(client_socket):
                 last_heartbeat_time = time.time()
                 # print(f"[DATA IN] Received {len(chunk)} bytes") # Debugging
             except socket.timeout:
-                # FIX: If the socket times out (0.2s of silence), MT5 is done sending.
-                # If we have data in the buffer, process it NOW instead of waiting for a TF change.
+                # FIX 6: socket.timeout means 0.2s of silence — MT5 is done sending
+                # this frame. If we have data buffered, process it now rather than
+                # waiting for the next TF change or \x00 terminator.
                 if recv_buffer.strip():
                     process_payload(recv_buffer)
                     recv_buffer = ""
                 continue
             except (ConnectionResetError, BrokenPipeError):
                 break
-            
-            # --- Keep your existing framing logic below ---
-            while '\x00' in recv_buffer:
-                packet, recv_buffer = recv_buffer.split('\x00', 1)
-                process_payload(packet)
-
-            while '\n' in recv_buffer and len(recv_buffer) < 256:
-                line, recv_buffer = recv_buffer.split('\n', 1)
-                process_payload(line)
-
-            # Your safety flush logic remains active
-            if len(recv_buffer) > 4000:
-                if recv_buffer.count('|') >= 20 or (recv_buffer.startswith("MTF_DATA\n") and recv_buffer.count('\n') >= 6):
-                    process_payload(recv_buffer)
-                    recv_buffer = ""
-            
-            # Update heartbeat time on any received data
-            last_heartbeat_time = time.time()
-            recv_buffer += chunk
-            print(f"[DATA IN] Received {len(chunk)} bytes from MT5")
 
             # Primary framing: MT5 StringToCharArray sends trailing '\x00' terminator.
             while '\x00' in recv_buffer:
