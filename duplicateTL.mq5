@@ -109,15 +109,19 @@ void HandleDuplication()
     string targetName = "";
 
     // 1. Identify which line is currently selected
-    for(int i = ObjectsTotal(0, 0, OBJ_TREND) - 1; i >= 0; i--)
-    {
-        string name = ObjectName(0, i);
-        if(ObjectGetInteger(0, name, OBJPROP_SELECTED))
-        {
-            totalSelected++;
-            targetName = name;
-        }
-    }
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+       string name = ObjectName(0, i);
+   
+       if(ObjectGetInteger(0, name, OBJPROP_TYPE) != OBJ_TREND)
+           continue;
+   
+       if(ObjectGetInteger(0, name, OBJPROP_SELECTED))
+       {
+           totalSelected++;
+           targetName = name;
+       }
+   }
 
     // 2. Reject if multiple lines are selected
     if(totalSelected > 1)
