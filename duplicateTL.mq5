@@ -14,9 +14,10 @@ input color    lblColor      = clrYellow;
 // Global Variables
 string BtnDupName = "btn_duplicate_tl";
 string BtnRemName = "btn_remove_all_tl";
+string BtnDeleteSel = "btn_delete_selected";
+string BtnDeSelect = "btn_deselect_all";
 string BtnExitClean = "btn_exit_clean";
 string BtnExitOnly  = "btn_exit_only";
-string BtnDeleteSel = "btn_delete_selected";
 string idxLabel   = "lblNextCandle";
 
 //+------------------------------------------------------------------+
@@ -32,14 +33,17 @@ int OnInit()
                 X_Edge_Offset,
                 Y_Edge_Offset + ((ButtonHeight + 5) * 2),
                 clrFireBrick);
+    CreateButton(BtnDeSelect, "🗑 De-Selecte All",
+                X_Edge_Offset,
+                Y_Edge_Offset + ((ButtonHeight + 5) * 3),
+                clrDeepSkyBlue);
     CreateButton(BtnExitClean, "❌ Exit & Clean",
                  X_Edge_Offset,
-                 Y_Edge_Offset + ((ButtonHeight + 5) * 3),
+                 Y_Edge_Offset + ((ButtonHeight + 5) * 4),
                  clrDarkOrange);
-
     CreateButton(BtnExitOnly,  "🚪 Exit Only",
                  X_Edge_Offset,
-                 Y_Edge_Offset + ((ButtonHeight + 5) * 4),
+                 Y_Edge_Offset + ((ButtonHeight + 5) * 5),
                  clrDimGray);
     EventSetTimer(1); 
     return(INIT_SUCCEEDED);
@@ -50,6 +54,7 @@ void OnDeinit(const int reason)
     ObjectDelete(0, BtnDupName);
     ObjectDelete(0, BtnRemName);
     ObjectDelete(0, BtnDeleteSel);
+    ObjectDelete(0, BtnDeSelect);
     ObjectDelete(0, BtnExitClean);
     ObjectDelete(0, BtnExitOnly);
     ObjectDelete(0, idxLabel);
@@ -81,7 +86,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
     {
         if(sparam == BtnDupName)
         {
-            HandleDuplication();
+            HandleDuplication(true);
             ObjectSetInteger(0, BtnDupName, OBJPROP_STATE, false);
         }
 
@@ -90,7 +95,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             RemoveDuplicates();
             ObjectSetInteger(0, BtnRemName, OBJPROP_STATE, false);
         }
-
+        
+        if(sparam == BtnDeleteSel)
+         {
+             DeleteSelectedTrendlines();
+             ObjectSetInteger(0, BtnDeleteSel, OBJPROP_STATE, false);
+         }
+         
+        if(sparam == BtnDeSelect)
+         {
+             HandleDuplication(false);
+             ObjectSetInteger(0, BtnDeSelect, OBJPROP_STATE, false);
+         }
         if(sparam == BtnExitClean)
         {
             ExitAndClean();
@@ -102,24 +118,19 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             RemoveUI();
             ObjectSetInteger(0, BtnExitOnly, OBJPROP_STATE, false);
         }
-        if(sparam == BtnDeleteSel)
-         {
-             DeleteSelectedTrendlines();
-             ObjectSetInteger(0, BtnDeleteSel, OBJPROP_STATE, false);
-         }
 
         ChartRedraw();
     }
 }
 
-void HandleDuplication()
+void HandleDuplication(bool dup)
 {
     int totalSelected = 0;
     string targetName = "";
 
     // 1. Identify which line is currently selected
-   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
-   {
+    for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+    {
        string name = ObjectName(0, i);
    
        if(ObjectGetInteger(0, name, OBJPROP_TYPE) != OBJ_TREND)
@@ -130,16 +141,47 @@ void HandleDuplication()
            totalSelected++;
            targetName = name;
        }
-   }
+    }
+   
+    if(!dup)
+    {
+       if(totalSelected == 0)
+       {
+           Comment("❌ Error: No trendline selected.");
+           return;
+       }
+   
+       for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+       {
+           string name = ObjectName(0, i);
+   
+           if(ObjectGetInteger(0, name, OBJPROP_TYPE) != OBJ_TREND)
+               continue;
+   
+           ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+       }
+   
+       Comment("⚠️ Trendlines unselected.");
+       ChartRedraw();
+       return;
+    }
 
     // 2. Reject if multiple lines are selected
     if(totalSelected > 1)
     {
-        for(int i = ObjectsTotal(0, 0, -1) - 1; i >= 0; i--)
-            ObjectSetInteger(0, ObjectName(0, i), OBJPROP_SELECTED, false);
-        Comment("⚠️ Error: Multiple lines selected. Unselecting all.");
-        ChartRedraw();
-        return;
+       for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+       {
+           string name = ObjectName(0, i);
+   
+           if(ObjectGetInteger(0, name, OBJPROP_TYPE) != OBJ_TREND)
+               continue;
+   
+           ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+       }
+   
+       Comment("⚠️ Multiple lines selected. Unselected all.");
+       ChartRedraw();
+       return;
     }
 
     if(totalSelected == 1)
@@ -233,9 +275,10 @@ void RemoveUI()
 {
     ObjectDelete(0, BtnDupName);
     ObjectDelete(0, BtnRemName);
+    ObjectDelete(0, BtnDeleteSel);
+    ObjectDelete(0, BtnDeSelect);
     ObjectDelete(0, BtnExitClean);
     ObjectDelete(0, BtnExitOnly);
-    ObjectDelete(0, BtnDeleteSel);
     ObjectDelete(0, idxLabel);
 
     Comment("");
