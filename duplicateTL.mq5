@@ -16,6 +16,7 @@ string BtnDupName = "btn_duplicate_tl";
 string BtnRemName = "btn_remove_all_tl";
 string BtnExitClean = "btn_exit_clean";
 string BtnExitOnly  = "btn_exit_only";
+string BtnDeleteSel = "btn_delete_selected";
 string idxLabel   = "lblNextCandle";
 
 //+------------------------------------------------------------------+
@@ -27,17 +28,19 @@ int OnInit()
                  X_Edge_Offset, 
                  Y_Edge_Offset + (ButtonHeight + 5), 
                  clrDodgerBlue);
-
+    CreateButton(BtnDeleteSel, "🗑 Delete Selected",
+                X_Edge_Offset,
+                Y_Edge_Offset + ((ButtonHeight + 5) * 2),
+                clrFireBrick);
     CreateButton(BtnExitClean, "❌ Exit & Clean",
                  X_Edge_Offset,
-                 Y_Edge_Offset + ((ButtonHeight + 5) * 2),
+                 Y_Edge_Offset + ((ButtonHeight + 5) * 3),
                  clrDarkOrange);
 
     CreateButton(BtnExitOnly,  "🚪 Exit Only",
                  X_Edge_Offset,
-                 Y_Edge_Offset + ((ButtonHeight + 5) * 3),
+                 Y_Edge_Offset + ((ButtonHeight + 5) * 4),
                  clrDimGray);
-
     EventSetTimer(1); 
     return(INIT_SUCCEEDED);
 }
@@ -46,6 +49,7 @@ void OnDeinit(const int reason)
 {
     ObjectDelete(0, BtnDupName);
     ObjectDelete(0, BtnRemName);
+    ObjectDelete(0, BtnDeleteSel);
     ObjectDelete(0, BtnExitClean);
     ObjectDelete(0, BtnExitOnly);
     ObjectDelete(0, idxLabel);
@@ -98,6 +102,11 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             RemoveUI();
             ObjectSetInteger(0, BtnExitOnly, OBJPROP_STATE, false);
         }
+        if(sparam == BtnDeleteSel)
+         {
+             DeleteSelectedTrendlines();
+             ObjectSetInteger(0, BtnDeleteSel, OBJPROP_STATE, false);
+         }
 
         ChartRedraw();
     }
@@ -181,6 +190,32 @@ void RemoveDuplicates()
     Comment("🗑️ Cleaned.");
 }
 
+void DeleteSelectedTrendlines()
+{
+    int deleted = 0;
+
+    for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+    {
+        string name = ObjectName(0, i);
+
+        if(ObjectGetInteger(0, name, OBJPROP_TYPE) != OBJ_TREND)
+            continue;
+
+        if(ObjectGetInteger(0, name, OBJPROP_SELECTED))
+        {
+            ObjectDelete(0, name);
+            deleted++;
+        }
+    }
+
+    if(deleted > 0)
+        Comment("🗑 Deleted selected trendline(s).");
+    else
+        Comment("⚠️ No trendline selected.");
+
+    ChartRedraw();
+}
+
 void CreateButton(string name, string text, int x, int y, color bg)
 {
     ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
@@ -200,6 +235,7 @@ void RemoveUI()
     ObjectDelete(0, BtnRemName);
     ObjectDelete(0, BtnExitClean);
     ObjectDelete(0, BtnExitOnly);
+    ObjectDelete(0, BtnDeleteSel);
     ObjectDelete(0, idxLabel);
 
     Comment("");
