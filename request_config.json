@@ -1,8 +1,9 @@
 {
     "mt5_path": "/Users/alex/Library/ApplicationSupport/net.metaquotes.wine.metatrader5/drive_c/ProgramFiles/MetaTrader5/MQL5/Files",
-    "visualizer_backend": "TkAgg",
+    "visualizer_backend": "MacOSX",
     "active_symbols": ["BTCUSD", "XAUUSD"],
     "history_bars": 101,
     "refresh_rate": 0.5,
+    "retrain_interval": 20,
     "logic_settings": {}
 }

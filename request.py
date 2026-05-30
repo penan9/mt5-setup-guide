@@ -16,6 +16,8 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
+VERSION = "AI Brain Master 14, May 31st 2026 - Robust MTF Parser & Versioned Evolution"
+
 # FIX 7: Configure matplotlib backend BEFORE importing pyplot (moved here, before any plt import).
 # Load config minimally just to get the backend setting.
 _CONFIG_FILE_EARLY = "request_config.json"
@@ -41,7 +43,6 @@ import mplfinance as mpf
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 warnings.filterwarnings("ignore", category=UserWarning)
-VERSION = "AI Brain Master 13.1 - Robust MTF Parser & Versioned Evolution"
 
 MEMORY_FILE = "memory.json"
 
@@ -57,79 +58,67 @@ def save_memory(data):
 
 # --- Configuration ---
 CONFIG_FILE = "request_config.json"
+
+# --- Configuration Loading (STRICT) ---
 def load_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                cfg = json.load(f)
-                # Note: JSON does not allow duplicate keys. If request_config.json has
-                # duplicate "active_symbol" keys, only the LAST value is kept by Python's
-                # json.load. This is expected behavior. Fix the JSON file to avoid confusion.
-                return cfg
-        except Exception as e:
-            print(f"Error loading config: {e}")
-    return {}
-
-config = load_config()
-VISUALIZER_CLOSE_STOPS_SERVER = bool(config.get("visualizer_close_stops_server", False))
-
-MT5_BASE_PATH = config.get("mt5_path", "/home/ubuntu/upload")
-HISTORY_CSV = None  # Will be set by find_history_file()
-
-def find_history_file(base_path):
-    """Find MT5_Set_History.csv with smart fallback logic"""
-    global HISTORY_CSV  # Important: allow modifying the global variable
+    """Load request_config.json. Exit if not found."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(script_dir, "request_config.json")
     
-    direct_path = os.path.join(base_path, "MT5_Set_History.csv")
+    if not os.path.exists(config_path):
+        print("\n" + "="*70)
+        print("ERROR: request_config.json NOT FOUND")
+        print("="*70)
+        print(f"Expected at: {config_path}")
+        print("\nCreate the file with:")
+        print('{')
+        print('  "mt5_path": "/your/data/path"')
+        print('}')
+        print("="*70 + "\n")
+        sys.exit(1)
     
-    # FIX 3a: Configured mt5_path doesn't exist (different machine, Wine, etc.)
-    dir_part = os.path.dirname(direct_path)
-    if dir_part and not os.path.exists(dir_part):
-        local_path = os.path.abspath("MT5_Set_History.csv")
-        print(f"!!! WARNING: Configured mt5_path '{base_path}' does not exist.")
-        print(f"!!! Falling back to local path: {local_path}")
-        HISTORY_CSV = local_path
-        return local_path
-
-    # Direct path exists → use it
-    if os.path.exists(direct_path):
-        HISTORY_CSV = direct_path
-        return direct_path
-    
-    # Auto-discovery in the base_path directory tree
-    print(f">>> AUTO-DISCOVERY: Searching for MT5_Set_History.csv in {base_path}...")
-    for root, dirs, files in os.walk(base_path):
-        if "MT5_Set_History.csv" in files:
-            found_path = os.path.join(root, "MT5_Set_History.csv")
-            print(f">>> AUTO-DISCOVERY: Found history file at {found_path}")
-            HISTORY_CSV = found_path
-            return found_path
-    
-    # Fallback to current working directory
-    local_path = os.path.abspath("MT5_Set_History.csv")
-    if os.path.exists(local_path):
-        print(f">>> Using local history file: {local_path}")
-        HISTORY_CSV = local_path
-        return local_path
-    
-    # Manual path from config (if any)
-    manual_path = config.get("history_file_path")
-    if manual_path and os.path.exists(manual_path):
-        print(f">>> Using manual history path from config: {manual_path}")
-        HISTORY_CSV = manual_path
-        return manual_path
-    
-    # Final fallback - keep standardized location under MT5 base_path
-    standardized_path = os.path.join(base_path, "MT5_Set_History.csv")
     try:
-        os.makedirs(base_path, exist_ok=True)
-    except Exception:
-        pass
-    print(f"!!! WARNING: History file not found. Will create new one at: {standardized_path}")
-    HISTORY_CSV = standardized_path
-    return standardized_path
+        with open(config_path, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+    except Exception as e:
+        print(f"\nERROR: Cannot read config: {e}\n")
+        sys.exit(1)
+    
+    if "mt5_path" not in cfg:
+        print("\nERROR: 'mt5_path' missing in request_config.json\n")
+        sys.exit(1)
+    
+    return cfg
 
-HISTORY_CSV = find_history_file(MT5_BASE_PATH)
+# Load config
+config = load_config()
+MT5_BASE_PATH = os.path.expanduser(config["mt5_path"])
+MT5_BASE_PATH = os.path.abspath(MT5_BASE_PATH)
+
+if not os.path.isdir(MT5_BASE_PATH):
+    print("\n" + "="*70)
+    print("ERROR: mt5_path does not exist")
+    print(f"Path: {MT5_BASE_PATH}")
+    print("="*70 + "\n")
+    sys.exit(1)
+
+HOST = str(config.get("socket_host", "127.0.0.1"))
+PORT = int(config.get("socket_port", 9090))
+
+print(f">>> Using MT5 path: {MT5_BASE_PATH}")
+
+def find_history_file(base_path, filename):
+    """Return full path. Exit if directory missing."""
+    full_path = os.path.join(base_path, filename)
+    dir_part = os.path.dirname(full_path)
+    
+    if not os.path.isdir(dir_part):
+        print("\nERROR: Directory missing: " + dir_part + "\n")
+        sys.exit(1)
+    
+    return full_path
+
+HISTORY_CSV = find_history_file(MT5_BASE_PATH, "MT5_Set_History.csv")
 EA_PATH = os.path.join(MT5_BASE_PATH, "test2.mq5")
 
 print(f">>> PATH DEBUGGER: Looking for history at: {HISTORY_CSV}")
@@ -159,6 +148,10 @@ for d in [MODEL_DIR, DATA_DIR, HISTORY_DIR]:
     os.makedirs(d, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+from logging.handlers import RotatingFileHandler
+handler = RotatingFileHandler("system.log", maxBytes=5*1024*1024, backupCount=3)
+logger.addHandler(handler)
 
 # --- Global Control & Data ---
 global_stop_event = threading.Event()
@@ -223,6 +216,15 @@ class TradePerformanceTracker:
         except Exception as e:
             logger.warning(f"[TradePerformanceTracker] Failed to save stats: {e}")
 
+def heartbeat_monitor():
+    while not global_stop_event.is_set():
+        if time.time() - last_heartbeat_time > 30:  # 30s silence
+            logger.warning("No heartbeat detected. Attempting reconnect...")
+            # Add your socket reconnect logic here
+        time.sleep(5)
+
+threading.Thread(target=heartbeat_monitor, daemon=True).start()
+
 # --- AI Brain Class ---
 class AIBrain:
     def __init__(self, brain_file, backup_file, history_csv):
@@ -276,7 +278,7 @@ class AIBrain:
     def _recalculate_kpis(self):
         if not os.path.exists(self.history_csv): return
         try:
-            df = pd.read_csv(self.history_csv, encoding='ansi')
+            df = pd.read_csv(self.history_csv, encoding='cp1252', encoding_errors='ignore')
             if df.empty: return
             
             label_col = 'success_label' if 'success_label' in df.columns else 'outcome'
@@ -307,21 +309,34 @@ class AIBrain:
         for k, v in features.items():
             data[f'feat_{k}'] = [float(v)]
         df_new = pd.DataFrame(data)
-        # FIX 3b: Ensure the directory for the history CSV exists before writing
+
+        # Ensure directory exists
         history_dir = os.path.dirname(self.history_csv)
         if history_dir and not os.path.exists(history_dir):
             try:
                 os.makedirs(history_dir, exist_ok=True)
-                print(f">>> Created history directory: {history_dir}")
+                logger.info(f">>> Created history directory: {history_dir}")
             except Exception as mkdir_err:
-                # If we can't create the directory, fall back to local file
                 self.history_csv = os.path.abspath("MT5_Set_History.csv")
                 logger.warning(f"Cannot write to configured path. Using local: {self.history_csv}")
-        df_new.to_csv(self.history_csv, mode='a', index=False, header=not os.path.exists(self.history_csv), encoding='ansi')
+
+        # Append safely with headers if file is empty
+        write_header = not os.path.exists(self.history_csv) or os.path.getsize(self.history_csv) == 0
+        try:
+            df_new.to_csv(self.history_csv, mode='a', index=False, header=write_header, encoding='cp1252')
+        except Exception as e:
+            logger.error(f"Failed to append to history CSV: {e}")
+            return
+
         self.brain_age += 1
         self._recalculate_kpis()
-        if self.brain_age % 10 == 0:
+
+        # Configurable retrain interval
+        retrain_interval = int(config.get("retrain_interval", 10))
+        if self.brain_age % retrain_interval == 0:
             threading.Thread(target=self.retrain, daemon=True).start()
+
+        # Evolution trigger
         if self.profit_factor > self.last_evolved_pf + 0.1 and self.brain_age > 50:
             self.evolve_system()
 
@@ -331,7 +346,7 @@ class AIBrain:
         try:
             # FIX 5: Use same encoding as _recalculate_kpis() to avoid UnicodeDecodeError
             # on Windows-generated MT5 CSV files.
-            df = pd.read_csv(self.history_csv, encoding='ansi')
+            df = pd.read_csv(self.history_csv, encoding='cp1252', encoding_errors='ignore')
       
             if 'feat_set_magnitude' in df.columns and 'feat_bars_duration' in df.columns:
                 df['pattern_weight'] = 1.0
@@ -483,13 +498,25 @@ class AIBrain:
 
 # --- Global Instances ---
 performance_tracker = TradePerformanceTracker(STATS_FILE, STATS_BACKUP)
-ai_brain = AIBrain(BRAIN_FILE, BRAIN_BACKUP, HISTORY_CSV)
+
+# Per-symbol brains to keep gold and bitcoin separate
+brain_cache = {}
+def get_brain(symbol):
+    safe_sym = re.sub(r'[^A-Z0-9]', '_', symbol.upper())
+    brain_file = os.path.join(MT5_BASE_PATH, f"ai_brain_{safe_sym}.joblib")
+    backup_file = os.path.join(MT5_BASE_PATH, f"ai_brain_{safe_sym}_backup.joblib")
+    if safe_sym not in brain_cache:
+        brain_cache[safe_sym] = AIBrain(brain_file, backup_file, HISTORY_CSV)
+        print(f">>> Loaded separate brain for {symbol}")
+    return brain_cache[safe_sym]
+
+ai_brain = get_brain("DEFAULT")  # fallback
 
 class RealtimeVisualizer:
     def __init__(self):
         # Create a single figure with 4 subplots
         self.fig, (self.ax_main, self.ax_ai, self.ax_kpi, self.ax_mtf) = plt.subplots(
-            4, 1, figsize=(12, 11), gridspec_kw={'height_ratios': [3.5, 1, 1.5, 1]}
+            4, 1, figsize=(10, 6), gridspec_kw={'height_ratios': [3.5, 1, 1.5, 1]}
         )
         
         # 1. MT5 Styling (Black Background / Green & Red Candles)
@@ -524,8 +551,6 @@ class RealtimeVisualizer:
         self.button_close.on_clicked(self.close_server)
 
         self.fig.subplots_adjust(hspace=0.5, left=0.08, right=0.92, top=0.93, bottom=0.05)
-        plt.ion() 
-        self.fig.show()
 
     def toggle_mtf_mode(self, event):
         global global_mtf_mode
@@ -582,6 +607,13 @@ class RealtimeVisualizer:
         
         self.ax_kpi.text(0.01, 0.5, kpi_text, color=text_color, fontsize=8, family='monospace', va='center')
 
+        # --- KPI Bar Chart ---
+        wr_values = [(d['wins']/d['trades']*100) if d['trades'] else 0 for d in performance_tracker.stats.values()]
+        colors = ['green' if wr > 60 else 'yellow' if wr > 40 else 'red' for wr in wr_values]
+        self.ax_kpi.bar(range(len(wr_values)), wr_values, color=colors)
+        self.ax_kpi.set_ylim(0, 100)
+        self.ax_kpi.set_title("Win Rate by Strategy", color='white', fontsize=8)
+
         # --- MTF FLOW DISPLAY ---
         self.ax_mtf.axis('off')
         mtf_text = "MULTI-TIMEFRAME DATA FLOW:\n"
@@ -593,7 +625,8 @@ class RealtimeVisualizer:
         
         self.ax_mtf.text(0.01, 0.5, mtf_text, color='#00ffff', fontsize=8, family='monospace', va='center')
 
-        self.fig.suptitle(f'{symbol} ({tf}) | {status} | AI v{ai_brain.current_version}', color='#00FF00', y=0.98)
+        brain_ver = get_brain(symbol).current_version if symbol in [k.replace('_','') for k in brain_cache] else ai_brain.current_version
+        self.fig.suptitle(f'{symbol} ({tf}) | {status} | AI v{brain_ver}', color='#00FF00', y=0.98)
         self.ax_ai.set_ylim(0, 1)
         
         self.fig.canvas.draw_idle()
@@ -967,7 +1000,7 @@ def handle_client(client_socket):
             try:
                 json_data = json.loads(data)
                 if json_data.get('action') == 'learn':
-                    ai_brain.record_and_learn(
+                    get_brain(json_data.get('features', {}).get('symbol','DEFAULT')).record_and_learn(
                         features=json_data.get('features', {}),
                         outcome=json_data.get('outcome', 0),
                         pips=json_data.get('pips', 0),
@@ -998,7 +1031,7 @@ def handle_client(client_socket):
         if ohlc_df is not None and features is not None:
             print(f"[DATA PARSE] Symbol={features.get('symbol', '?')}, TF={features.get('timeframe', '?')}, Candles={len(ohlc_df)}")
         else:
-            if len(data) >= 20:
+            if len(data) >= 500:
                 print(f"[DATA ERROR] Failed to parse data from MT5")
             return
 
@@ -1009,12 +1042,16 @@ def handle_client(client_socket):
             global_mt5_symbol = features['symbol']
             global_mt5_timeframe = features['timeframe']
             ai_score_history = []
+            global_mtf_data = {}
+            global_candle_details = {}
 
-        if ai_brain.learning_status == "INITIALIZING":
-            ai_brain.learning_status = "LEARNING" if ai_brain.brain_age < 50 else "EVOLVING"
+        current_brain = get_brain(features['symbol'])
+        if current_brain.learning_status == "INITIALIZING":
+            current_brain.learning_status = "LEARNING" if current_brain.brain_age < 50 else "EVOLVING"
 
         try:
-            score, direction, max_hold = ai_brain.predict(features)
+            current_brain = get_brain(features['symbol'])
+            score, direction, max_hold = current_brain.predict(features)
             response = f"{score:.4f}|{direction}|{max_hold}\n"
             print(f"[DATA OUT] Sending response: Score={score:.4f}, Direction={direction}, MaxHold={max_hold}")
             client_socket.sendall(response.encode('utf-8'))
@@ -1033,7 +1070,11 @@ def handle_client(client_socket):
         if len(ai_score_history) > len(ohlc_data_history):
             ai_score_history.pop(0)
 
-        if ai_brain.brain_age < 20 and len(ohlc_df) >= 10:
+        current_brain = get_brain(features['symbol'])
+        if current_brain.brain_age < 20 and len(ohlc_df) >= 10:
+            # simulate using current brain's age
+            global ai_brain
+            ai_brain = current_brain
             simulate_trades_on_ohlc(ohlc_df, features)
 
         plot_update_queue.put({
@@ -1126,14 +1167,13 @@ def socket_listener():
     while not global_stop_event.is_set():
         try:
             client_socket, addr = server_socket.accept()
-            print(f"Accepted connection from {addr}")
-            client_handler = threading.Thread(target=handle_client, args=(client_socket,))
-            client_handler.start()
+            print(f"[SOCKET] Accepted connection from {addr}")
+            # handle each MT5 client in its own thread using existing handle_client
+            threading.Thread(target=handle_client, args=(client_socket,), daemon=True).start()
         except socket.timeout:
-            continue # Loop again, check global_stop_event
+            continue
         except Exception as e:
             print(f"Error accepting connection: {e}")
-            time.sleep(1) # Wait a bit before retrying
 
     print("Socket listener shutting down.")
     server_socket.close()
@@ -1144,39 +1184,42 @@ def start_server():
     listener_thread = threading.Thread(target=socket_listener, daemon=True)
     listener_thread.start()
     
-    # Start the visualizer in the main thread (ONLY ONCE!)
     visualizer = RealtimeVisualizer()
     
-    while not global_stop_event.is_set():
+    def ui_update():
+        if global_stop_event.is_set():
+            plt.close('all')
+            return False
         try:
-            # Try to get data from the queue, with a small timeout
-            plot_data = plot_update_queue.get(timeout=0.1)
-            visualizer.update_plot(
-                plot_data['ohlc'],
-                plot_data['scores'],
-                plot_data['set'],
-                plot_data['status'],
-                plot_data['symbol'],
-                plot_data['tf'],
-                plot_data['snr'],
-                plot_data['candle_details'],
-                plot_data['mtf_data']
-            )
+            while True:
+                plot_data = plot_update_queue.get_nowait()
+                visualizer.update_plot(
+                    plot_data['ohlc'],
+                    plot_data['scores'],
+                    plot_data['set'],
+                    plot_data['status'],
+                    plot_data['symbol'],
+                    plot_data['tf'],
+                    plot_data['snr'],
+                    plot_data['candle_details'],
+                    plot_data['mtf_data']
+                )
         except queue.Empty:
-            # No data in queue, continue loop
             pass
-        except Exception as e:
-            print(f"Error in visualizer update loop: {e}")
-            break
         
-        # Check for heartbeat timeout
         if time.time() - last_heartbeat_time > 30 and global_socket_status == "CONNECTED":
-            print("!!! WARNING: No heartbeat from MT5 for 30 seconds. MT5 might be disconnected. Resetting connection status.")
+            print("!!! WARNING: No heartbeat from MT5 for 30s")
             global_socket_status = "DISCONNECTED"
-
+        return True
+    
+    timer = visualizer.fig.canvas.new_timer(interval=50)
+    timer.add_callback(ui_update)
+    timer.start()
+    
+    plt.show(block=True)
+    
     print("Main application loop finished.")
-    plt.close(visualizer.fig)
     sys.exit(0)
-
+    
 if __name__ == "__main__":
     start_server()
