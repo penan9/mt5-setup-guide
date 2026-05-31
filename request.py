@@ -16,7 +16,56 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-VERSION = "AI Brain Master 14, May 31st 2026 - Robust MTF Parser & Versioned Evolution"
+VERSION = "AI Brain Master 14.1, May 31st 2026 - Robust MTF Parser & Versioned Evolution"
+
+def load_history_file(path):
+    """Load MT5 history - handles UTF-16, semicolon, no-header files."""
+    import pandas as pd
+    import os
+
+    if not os.path.exists(path):
+        print(f">>> History file missing: {path}")
+        return pd.DataFrame()
+
+    # Detect encoding from BOM
+    with open(path, 'rb') as f:
+        raw = f.read(4)
+
+    encoding = 'utf-16' if raw.startswith(b'\xff\xfe') or raw.startswith(b'\xfe\xff') else 'utf-8-sig'
+
+    try:
+        # Your file: "2026.05.31 03:20;BTCUSD;0;0.0" -> no header, sep=';'
+        df = pd.read_csv(path, encoding=encoding, sep=';', header=None, engine='python')
+
+        # If we got 1 column, try comma
+        if df.shape[1] == 1:
+            df = pd.read_csv(path, encoding=encoding, sep=',', header=None, engine='python')
+
+        # Assign column names based on your EA output
+        # Looks like: time ; symbol ; type ; profit
+        if df.shape[1] >= 4:
+            df.columns = ['time', 'symbol', 'type', 'profit'] + [f'col{i}' for i in range(4, df.shape[1])]
+        else:
+            df.columns = [f'col{i}' for i in range(df.shape[1])]
+
+        # Clean
+        df.columns = df.columns.str.strip().str.replace('\ufeff', '', regex=False)
+
+        print(f">>> History: {len(df)} rows, {df.shape[1]} cols (enc={encoding}, sep=';')")
+
+        # Convert types
+        if 'time' in df.columns:
+            df['time'] = pd.to_datetime(df['time'], format='%Y.%m.%d %H:%M', errors='coerce')
+        if 'profit' in df.columns:
+            df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0)
+            df['outcome'] = (df['profit'] > 0).astype(int)
+            print(f">>> Added outcome: {df['outcome'].sum()} wins / {(df['outcome']==0).sum()} losses")
+
+        return df
+
+    except Exception as e:
+        print(f">>> ERROR reading history: {e}")
+        return pd.DataFrame()
 
 # FIX 7: Configure matplotlib backend BEFORE importing pyplot (moved here, before any plt import).
 # Load config minimally just to get the backend setting.
@@ -107,14 +156,58 @@ PORT = int(config.get("socket_port", 9090))
 
 print(f">>> Using MT5 path: {MT5_BASE_PATH}")
 
-def find_history_file(base_path, filename):
-    """Return full path. Exit if directory missing."""
+def find_history_file(base_path, filename="MT5_Set_History.csv"):
+    """Return full path. Exit if directory missing. Debug file status."""
     full_path = os.path.join(base_path, filename)
     dir_part = os.path.dirname(full_path)
     
     if not os.path.isdir(dir_part):
-        print("\nERROR: Directory missing: " + dir_part + "\n")
+        print("\n" + "="*70)
+        print("ERROR: Directory missing")
+        print(f"Path: {dir_part}")
+        print("="*70 + "\n")
         sys.exit(1)
+    
+    # --- DEBUG: Check if file exists ---
+    print("\n" + "-"*70)
+    print(f"CHECKING HISTORY FILE")
+    print(f"Path: {full_path}")
+    
+    if os.path.exists(full_path):
+        size = os.path.getsize(full_path)
+        mtime = os.path.getmtime(full_path)
+        from datetime import datetime
+        mod_time = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+        
+        print(f"Status: FOUND ✓")
+        print(f"Size: {size:,} bytes")
+        print(f"Last modified: {mod_time}")
+        
+        # Quick check if file is readable and has content
+        try:
+            # MT5 writes UTF-16 with BOM
+            with open(full_path, 'r', encoding='utf-16', errors='ignore') as f:
+                first_line = f.readline().strip()
+                line_count = sum(1 for _ in f) + 1
+            print(f"Lines: ~{line_count:,}")
+            # Clean BOM characters for display
+            clean_header = first_line.replace('\ufeff', '').replace('\xff\xfe', '')
+            print(f"First line: {clean_header[:80]}...")
+        except Exception as e:
+            # Fallback to binary read
+            try:
+                with open(full_path, 'rb') as f:
+                    raw = f.read(100)
+                    print(f"Lines: unknown (binary)")
+                    print(f"First 50 bytes: {raw[:50]}")
+            except:
+                print(f"WARNING: Cannot read file: {e}")
+    else:
+        print(f"Status: NOT FOUND ✗")
+        print(f"MT5/EA has not created the file yet")
+        print(f"Waiting for EA to write to this location...")
+    
+    print("-"*70 + "\n")
     
     return full_path
 
@@ -278,7 +371,7 @@ class AIBrain:
     def _recalculate_kpis(self):
         if not os.path.exists(self.history_csv): return
         try:
-            df = pd.read_csv(self.history_csv, encoding='cp1252', encoding_errors='ignore')
+            df = load_history_file(self.history_csv)
             if df.empty: return
             
             label_col = 'success_label' if 'success_label' in df.columns else 'outcome'
@@ -346,7 +439,7 @@ class AIBrain:
         try:
             # FIX 5: Use same encoding as _recalculate_kpis() to avoid UnicodeDecodeError
             # on Windows-generated MT5 CSV files.
-            df = pd.read_csv(self.history_csv, encoding='cp1252', encoding_errors='ignore')
+            df = load_mt5_csv(self.history_csv)
       
             if 'feat_set_magnitude' in df.columns and 'feat_bars_duration' in df.columns:
                 df['pattern_weight'] = 1.0
