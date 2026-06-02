@@ -16,7 +16,9 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-VERSION = "AI Brain Master 14.1, May 31st 2026 - Robust MTF Parser & Versioned Evolution"
+VERSION = "AI Brain Master 14.1, May 31st 2026 - Robust MTF Parser & Versioned Evolution - server"
+global_socket_status = "DISCONNECTED"
+last_heartbeat_time = time.time()
 
 def load_history_file(path):
     """Load MT5 history - handles UTF-16, semicolon, no-header files."""
@@ -994,39 +996,48 @@ def parse_mql5_data(data_string):
 
 def simulate_trades_on_ohlc(ohlc_df, base_features):
     """
-    FIX 4: Simulate simple momentum-based trades on the received OHLC candles.
-    This bootstraps the AI brain with initial training data when no history CSV exists.
-    Uses a basic strategy: if close > open (bullish candle), label as win (1), else loss (0).
-    The AI will refine this with real trade outcomes as they come in from MT5.
+    Bootstrap AI brain when history CSV is empty.
+    Uses simple momentum on received MT5 candles.
     """
     global ai_brain
+    import time
+
     if len(ohlc_df) < 10:
         return
-    
+
+    # FIX: handle both 'Close' and 'close' column names
+    close_col = 'Close' if 'Close' in ohlc_df.columns else 'close'
+    open_col = 'Open' if 'Open' in ohlc_df.columns else 'open'
+    high_col = 'High' if 'High' in ohlc_df.columns else 'high'
+    low_col = 'Low' if 'Low' in ohlc_df.columns else 'low'
+
     simulated_count = 0
     for i in range(5, len(ohlc_df) - 1):
         try:
             row = ohlc_df.iloc[i]
             next_row = ohlc_df.iloc[i + 1]
-            
-            # Simple momentum: if this candle is bullish, predict next goes up
-            is_bullish = row['Close'] > row['Open']
-            next_bullish = next_row['Close'] > next_row['Open']
-            
-            # Outcome: 1 if prediction was correct, 0 if wrong
+
+            is_bullish = row[close_col] > row[open_col]
+            next_bullish = next_row[close_col] > next_row[open_col]
             outcome = 1 if (is_bullish == next_bullish) else 0
-            
-            # Estimate pips from the next candle's range
-            pips = (next_row['High'] - next_row['Low']) * (1 if outcome == 1 else -1)
-            
-            # Build a simple feature set from OHLC data
-            sim_features = dict(base_features)  # Copy current features as base
-            sim_features['set_magnitude'] = int(abs(row['Close'] - row['Open']) * 10000)
+
+            # FIX: use proper pip calculation for crypto (BTCUSD)
+            pips = abs(next_row[high_col] - next_row[low_col]) * 100
+            if outcome == 0:
+                pips = -pips
+
+            # Build features from your captured MT5 data
+            sim_features = dict(base_features)
+            sim_features['set_magnitude'] = int(abs(row[close_col] - row[open_col]) * 100000)
             sim_features['bars_duration'] = i
-            sim_features['hour_of_day'] = ohlc_df.index[i].hour if hasattr(ohlc_df.index[i], 'hour') else 12
-            
-            timestamp = int(ohlc_df.index[i].timestamp()) if hasattr(ohlc_df.index[i], 'timestamp') else int(time.time()) - (len(ohlc_df) - i) * 1800
-            
+            sim_features['hour_of_day'] = 12
+
+            # FIX: safe timestamp
+            try:
+                timestamp = int(time.time()) - (len(ohlc_df) - i) * 300 # 5min bars
+            except:
+                timestamp = int(time.time())
+
             ai_brain.record_and_learn(
                 features=sim_features,
                 outcome=outcome,
@@ -1035,9 +1046,10 @@ def simulate_trades_on_ohlc(ohlc_df, base_features):
                 timestamp=timestamp
             )
             simulated_count += 1
-            
+
             if ai_brain.brain_age >= 20:
-                break  # Stop once we have enough initial data
+                print(f">>> Bootstrapped brain with {simulated_count} simulated trades")
+                break
         except Exception as e:
             continue
     
@@ -1045,14 +1057,19 @@ def simulate_trades_on_ohlc(ohlc_df, base_features):
         print(f">>> [SIM] Bootstrapped AI with {simulated_count} simulated trades from OHLC history. Brain age: {ai_brain.brain_age}")
 
 
-# In request.py - modify handle_client function
-
-def handle_client(client_socket):
+def handle_client(client_socket, addr):
     global global_mt5_symbol, global_mt5_timeframe, global_socket_status
     global ohlc_data_history, ai_score_history, global_candle_details
     global global_mtf_data, global_mtf_mode, last_heartbeat_time
 
     global_socket_status = "CONNECTED"
+    last_heartbeat_time = time.time()  # <-- ADD THIS
+    recv_buffer = ""
+    
+    print(f"[SOCKET] Accepted connection from {addr}")
+    print("="*60)
+    print("[STATE] >>> PYTHON CONNECTED TO MT5 <<<")
+    print("="*60)
     
     # IMPORTANT: Send ACK immediately so MT5 knows connection is live
     try:
@@ -1085,6 +1102,7 @@ def handle_client(client_socket):
             or data.startswith("PONG")
         ):
             print("[HEARTBEAT] Received heartbeat from MT5.")
+            last_heartbeat_time = time.time()  # <-- ADD THIS
             client_socket.sendall(b"PONG\n")
             time.sleep(0.1)
             return
@@ -1145,9 +1163,38 @@ def handle_client(client_socket):
         try:
             current_brain = get_brain(features['symbol'])
             score, direction, max_hold = current_brain.predict(features)
-            response = f"{score:.4f}|{direction}|{max_hold}\n"
-            print(f"[DATA OUT] Sending response: Score={score:.4f}, Direction={direction}, MaxHold={max_hold}")
-            client_socket.sendall(response.encode('utf-8'))
+
+            # --- GET TRENDS FROM MT5 (you already send them) ---
+            # Your EA sends: ...|g_trend_m15|g_trend_h1|g_trend_h4|...
+            # parse_mql5_data puts them in features
+            trend_m15 = features.get('trend_m15', features.get('g_trend_m15', 0))
+            trend_h1 = features.get('trend_h1', features.get('g_trend_h1', 0))
+            trend_h4 = features.get('trend_h4', features.get('g_trend_h4', 0))
+
+            # --- TRIGGER LOGIC ---
+            threshold = 0.65  # start high, will auto-lower after 50 trades
+
+            if current_brain.brain_age >= 20:  # wait for bootstrap
+                buy_ok = (score > threshold and trend_h1 == 1 and trend_h4 == 1)
+                sell_ok = (score > threshold and trend_h1 == -1 and trend_h4 == -1)
+
+                if buy_ok:
+                    client_socket.sendall(b"TRADE|BUY\n")
+                    print(f">>> TRIGGER BUY | score={score:.2f} > {threshold} | H1={trend_h1} H4={trend_h4}")
+                elif sell_ok:
+                    client_socket.sendall(b"TRADE|SELL\n")
+                    print(f">>> TRIGGER SELL | score={score:.2f} > {threshold} | H1={trend_h1} H4={trend_h4}")
+                else:
+                    # send score to keep MT5 dashboard alive
+                    response = f"{score:.4f}|0|{max_hold}\n"
+                    client_socket.sendall(response.encode('utf-8'))
+                    print(f"[HOLD] score={score:.2f}")
+            else:
+                # during bootstrap, just send normal score
+                response = f"{score:.4f}|{direction}|{max_hold}\n"
+                client_socket.sendall(response.encode('utf-8'))
+                print(f"[BOOTSTRAP] Score={score:.4f} (age {current_brain.brain_age})")
+
         except BrokenPipeError:
             print("[SOCKET] Broken pipe - Client disconnected during send")
             raise
@@ -1262,7 +1309,7 @@ def socket_listener():
             client_socket, addr = server_socket.accept()
             print(f"[SOCKET] Accepted connection from {addr}")
             # handle each MT5 client in its own thread using existing handle_client
-            threading.Thread(target=handle_client, args=(client_socket,), daemon=True).start()
+            threading.Thread(target=handle_client, args=(client_socket,addr), daemon=True).start()
         except socket.timeout:
             continue
         except Exception as e:
@@ -1280,9 +1327,12 @@ def start_server():
     visualizer = RealtimeVisualizer()
     
     def ui_update():
+        global global_socket_status, last_heartbeat_time
+        
         if global_stop_event.is_set():
             plt.close('all')
             return False
+            
         try:
             while True:
                 plot_data = plot_update_queue.get_nowait()
@@ -1300,9 +1350,11 @@ def start_server():
         except queue.Empty:
             pass
         
+        # Check heartbeat only once
         if time.time() - last_heartbeat_time > 30 and global_socket_status == "CONNECTED":
             print("!!! WARNING: No heartbeat from MT5 for 30s")
             global_socket_status = "DISCONNECTED"
+            
         return True
     
     timer = visualizer.fig.canvas.new_timer(interval=50)
