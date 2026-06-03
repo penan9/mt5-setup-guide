@@ -16,7 +16,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-VERSION = "AI Brain Master 14.1, May 31st 2026 - Robust MTF Parser & Versioned Evolution - server"
+VERSION = "AI Brain Master 14.1, June 04 2026 - Robust MTF Parser & Versioned Evolution"
 global_socket_status = "DISCONNECTED"
 last_heartbeat_time = time.time()
 
@@ -155,6 +155,7 @@ if not os.path.isdir(MT5_BASE_PATH):
 
 HOST = str(config.get("socket_host", "127.0.0.1"))
 PORT = int(config.get("socket_port", 9090))
+BUFFER_SIZE = int(config.get("buffer_size", 16384))
 
 print(f">>> Using MT5 path: {MT5_BASE_PATH}")
 
@@ -220,9 +221,6 @@ print(f">>> PATH DEBUGGER: Looking for history at: {HISTORY_CSV}")
 if not os.path.exists(HISTORY_CSV):
     print(f"!!! WARNING: History file NOT FOUND at {HISTORY_CSV}. KPIs will remain 0 until first trade.")
 
-HOST = '127.0.0.1'
-PORT = 8888
-BUFFER_SIZE = 16384
 
 # Standardize all runtime files under mt5_path only
 os.makedirs(MT5_BASE_PATH, exist_ok=True)
@@ -1073,8 +1071,8 @@ def handle_client(client_socket, addr):
     
     # IMPORTANT: Send ACK immediately so MT5 knows connection is live
     try:
-        client_socket.sendall(b"ACK\n")
-        print("[SOCKET] Sent ACK to MT5 - connection ready")
+        client_socket.sendall(b"HELLO_ACK\n")
+        print("[SOCKET] Sent HELLO_ACK to MT5")
     except Exception as e:
         print(f"[SOCKET] Failed to send ACK: {e}")
         return
@@ -1241,7 +1239,8 @@ def handle_client(client_socket, addr):
             try:
                 chunk = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
                 if not chunk:
-                    break
+                    time.sleep(0.1)
+                    continue
                 recv_buffer += chunk
                 last_heartbeat_time = time.time()
                 # print(f"[DATA IN] Received {len(chunk)} bytes") # Debugging
@@ -1295,11 +1294,12 @@ def handle_client(client_socket, addr):
         except OSError as e:
             print(f"Error during socket shutdown/close: {e}")
 
+
 def socket_listener():
     global global_socket_status
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.settimeout(1.0) # Timeout for accept to allow checking global_stop_event
+    server_socket.settimeout(1.0)
     server_socket.bind((HOST, PORT))
     server_socket.listen(5)
     print(f"Listening on {HOST}:{PORT}")
@@ -1308,8 +1308,7 @@ def socket_listener():
         try:
             client_socket, addr = server_socket.accept()
             print(f"[SOCKET] Accepted connection from {addr}")
-            # handle each MT5 client in its own thread using existing handle_client
-            threading.Thread(target=handle_client, args=(client_socket,addr), daemon=True).start()
+            threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True).start()
         except socket.timeout:
             continue
         except Exception as e:
@@ -1317,7 +1316,8 @@ def socket_listener():
 
     print("Socket listener shutting down.")
     server_socket.close()
-
+    
+    
 def start_server():
     global global_socket_status, last_heartbeat_time, global_mt5_symbol, global_mt5_timeframe
 
@@ -1365,6 +1365,6 @@ def start_server():
     
     print("Main application loop finished.")
     sys.exit(0)
-    
+        
 if __name__ == "__main__":
     start_server()

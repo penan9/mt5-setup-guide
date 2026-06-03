@@ -5,5 +5,8 @@
     "history_bars": 101,
     "refresh_rate": 0.5,
     "retrain_interval": 20,
+    "socket_host": "127.0.0.1",
+    "socket_port": 8888,
+    "buffer_size": 16384,
     "logic_settings": {}
 }
