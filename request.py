@@ -16,7 +16,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-VERSION = "AI Brain Master 14.1, June 04 2026 - Robust MTF Parser & Versioned Evolution"
+VERSION = "AI Brain Master 15, June 10 2026 - Robust with reconnection"
 global_socket_status = "DISCONNECTED"
 last_heartbeat_time = time.time()
 
@@ -1319,12 +1319,22 @@ def socket_listener():
 
     
 def start_server():
-    global global_socket_status, last_heartbeat_time, global_mt5_symbol, global_mt5_timeframe
+    global global_socket_status, last_heartbeat_time
 
+    # start socket in background
     listener_thread = threading.Thread(target=socket_listener, daemon=True)
     listener_thread.start()
     
     visualizer = RealtimeVisualizer()
+    
+    def _graceful_exit(signum, frame):
+        print("\n[SHUTDOWN] Closing server...")
+        global_stop_event.set()
+        time.sleep(0.5)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _graceful_exit)
+    signal.signal(signal.SIGTERM, _graceful_exit)
     
     def ui_update():
         global global_socket_status, last_heartbeat_time
@@ -1349,22 +1359,19 @@ def start_server():
                 )
         except queue.Empty:
             pass
-        
-        # Check heartbeat only once
-        if time.time() - last_heartbeat_time > 30 and global_socket_status == "CONNECTED":
-            print("!!! WARNING: No heartbeat from MT5 for 30s")
-            global_socket_status = "DISCONNECTED"
-            
         return True
     
-    timer = visualizer.fig.canvas.new_timer(interval=50)
+    timer = visualizer.fig.canvas.new_timer(interval=100)  # 100ms is stable on Mac
     timer.add_callback(ui_update)
     timer.start()
     
-    plt.show(block=True)
-    
-    print("Main application loop finished.")
-    sys.exit(0)
+    try:
+        plt.show(block=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        global_stop_event.set()
+        print("[SHUTDOWN] Closing...")
         
 if __name__ == "__main__":
     start_server()
