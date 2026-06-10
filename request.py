@@ -1316,7 +1316,7 @@ def socket_listener():
 
     print("Socket listener shutting down.")
     server_socket.close()
-    
+
     
 def start_server():
     global global_socket_status, last_heartbeat_time, global_mt5_symbol, global_mt5_timeframe
