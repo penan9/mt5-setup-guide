@@ -1,12 +1,24 @@
 {
-    "mt5_path": "/Users/alex/Library/ApplicationSupport/net.metaquotes.wine.metatrader5/drive_c/ProgramFiles/MetaTrader5/MQL5/Files",
-    "visualizer_backend": "MacOSX",
-    "active_symbols": ["BTCUSD", "XAUUSD"],
-    "history_bars": 101,
-    "refresh_rate": 0.5,
-    "retrain_interval": 20,
-    "socket_host": "127.0.0.1",
-    "socket_port": 8888,
-    "buffer_size": 16384,
-    "logic_settings": {}
+  "mt5_path": "/Users/alex/Library/ApplicationSupport/net.metaquotes.wine.metatrader5/drive_c/ProgramFiles/MetaTrader5/MQL5/Files",
+  "visualizer_backend": "MacOSX",
+  "active_symbols": [
+    "BTCUSD",
+    "XAUUSD"
+  ],
+  "history_bars": 101,
+  "refresh_rate": 0.5,
+  "retrain_interval": 20,
+  "socket_host": "127.0.0.1",
+  "socket_port": 8888,
+  "buffer_size": 16384,
+  "logic_settings": {},
+  "EA_Set_1": 0.14,
+  "EA_Set_2": 0.14,
+  "EA_Set_3": 0.14,
+  "EA_Set_4": 0.14,
+  "EA_Set_5": 0.14,
+  "EA_Set_6": 0.15,
+  "EA_Set_7": 0.15,
+  "learning_rate": 0.01,
+  "min_confidence": 0.7
 }
