@@ -1,3 +1,15 @@
+I have python - request.py, config: request_config.json
+socket link to MT5- test2.mq5 or rename for you if you did not accept mq5 as test2.mq5.txt
+MT5 side mainly provide historical / live data with different timeframe with own flows
+and strategy as a base and plan for python side act as intelligent agent to keep
+study from the past history data and use all the basic strategy set in
+MT5 test2.mq5 to have improving version of python from time to time as connections to 
+MT5 is limited.  Always has self learning and set permanent to have the best 
+trading system in 3 years!  We can add slowing and improve the existing flows and strategy
+gradually and do not remove any working logics for python and mq5 while working on the improvement
+as a surprise.  We can discuss and propose first before straight away to make the changes as we have
+3 years roadmaps to work on it!
+
 System Output Overview:
 1. Startup Sequence (Console Output)
 When you launch the system, the "Brain" performs a self-check. Depending on whether it finds a saved state, you will see one of these distinct headers:
@@ -361,3 +373,8 @@ Scalability: Design for potential scaling to multiple trading accounts or instru
 This architecture provides a robust framework for developing the self-learning MT5 trading system. The modular design allows for independent development and testing of components, facilitating a structured and efficient implementation process. The integration of AI learning with a specific trading strategy and comprehensive trade management aims to create an adaptive and high-performing trading solution.
 
 auto trigger the test2.mq5 to explore on every custom strategy.
+
+implement a Proactive Historical Learning Module. This will:
+Auto-Scan on Startup: Immediately read your MT5_Set_History.csv and any other available MT5 history files to "pre-train" before the first trade.
+Deep Strategy Mining: Analyze the 7-set strategy patterns from your strategy.txt against the historical data to identify which specific market conditions led to past successes.
+Permanent Memory: Ensure that even if you restart the script, the AI retains everything it learned from the past, allowing for continuous, non-stop improvement.

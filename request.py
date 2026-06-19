@@ -252,6 +252,7 @@ logger.addHandler(handler)
 # --- Global Control & Data ---
 global_stop_event = threading.Event()
 plot_update_queue = queue.Queue()
+global_ui_command_queue = queue.Queue()
 ohcl_data_history = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'], dtype=float)
 ohcl_data_history.index = pd.DatetimeIndex([], name='Date')
 ai_score_history = []
@@ -642,6 +643,10 @@ class RealtimeVisualizer:
         self.button_mtf_toggle = Button(ax_mtf_toggle, 'Toggle MTF', color='#2e7d32', hovercolor='#388e3c')
         self.button_mtf_toggle.on_clicked(self.toggle_mtf_mode)
 
+        ax_scan_toggle = self.fig.add_axes([0.59, 0.95, 0.1, 0.03])
+        self.button_scan_toggle = Button(ax_scan_toggle, 'Toggle SCAN', color='#2e7d32', hovercolor='#388e3c')
+        self.button_scan_toggle.on_clicked(self.toggle_scan_mode)
+
         ax_close = self.fig.add_axes([0.81, 0.95, 0.1, 0.03])
         self.button_close = Button(ax_close, 'Close Server', color='#c62828', hovercolor='#d32f2f')
         self.button_close.on_clicked(self.close_server)
@@ -651,7 +656,18 @@ class RealtimeVisualizer:
     def toggle_mtf_mode(self, event):
         global global_mtf_mode
         global_mtf_mode = not global_mtf_mode
-        print(f"[UI] MTF Mode: {'ON' if global_mtf_mode else 'OFF'}")
+        print(f"[UI] Sending MTF Toggle command to MT5... (Local State: {'ON' if global_mtf_mode else 'OFF'})")
+        try:
+            global_ui_command_queue.put("UI_CMD:TOGGLE_MTF\n")
+        except Exception as e:
+            print(f"[UI ERROR] Failed to queue MTF toggle: {e}")
+
+    def toggle_scan_mode(self, event):
+        print(f"[UI] Sending SCAN Toggle command to MT5...")
+        try:
+            global_ui_command_queue.put("UI_CMD:TOGGLE_SCAN\n")
+        except Exception as e:
+            print(f"[UI ERROR] Failed to queue SCAN toggle: {e}")
 
     def close_server(self, event):
         # FIX 8: Always signal the stop event so the socket listener thread exits cleanly.
@@ -1271,6 +1287,15 @@ def handle_client(client_socket, addr):
     client_socket.settimeout(0.2)
     recv_buffer = ""
 
+    def process_ui_commands():
+        try:
+            while not global_ui_command_queue.empty():
+                cmd = global_ui_command_queue.get_nowait()
+                client_socket.sendall(cmd.encode())
+                print(f"[UI COMMAND] Sent to MT5: {cmd.strip()}")
+        except Exception as e:
+            print(f"[UI ERROR] Failed to send UI command: {e}")
+
     def process_payload(payload):
         nonlocal recv_buffer
         global global_mt5_symbol, global_mt5_timeframe, global_socket_status
@@ -1413,6 +1438,7 @@ def handle_client(client_socket, addr):
     try:
         client_socket.settimeout(0.2)
         while not global_stop_event.is_set():
+            process_ui_commands()
             try:
                 chunk = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
                 if not chunk:
