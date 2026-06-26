@@ -731,7 +731,7 @@ class RealtimeVisualizer:
         mtf_text = "MULTI-TIMEFRAME DATA FLOW:\n"
         if mtf_data:
             for tf_name, data in mtf_data.items():
-                mtf_text += f"{tf_name:<8} | C: {data.get('candles', 0):<3} | Last: {data.get('close', 0):.5f}\n"
+                mtf_text += f"{tf_name:<8} | Close: {data.get('close', 0):.5f} | Slope: {data.get('slope', 0):.5f} | Sit: {data.get('sitting', 0):.2f}\n"
         else:
             mtf_text += "Waiting for MTF data flow..."
         
@@ -766,61 +766,40 @@ def safe_bool(val, default=False):
         return False
 
 def parse_single_mtf_message(mtf_msg_string):
-    """Parses a single MTF message string from MT5."""
+    """Parses a single MTF message string from MT5.
+
+    Wire format (fixed position, 9 pipe-separated fields):
+        tf_name|slope|dist_A|position|sitting|direction|mirror|gap|close
+
+    NOTE: 'mirror' and 'gap' are currently sent as 0.0 placeholders from the
+    MT5 side (MTF_BuildMessage) until real geometry logic for them is defined.
+    The MTF signal engine's 'mid_gap' check will read 0.0 until that's wired up.
+    """
     try:
         parts = mtf_msg_string.split('|')
-        if len(parts) < 6:
-            log_parser_error("MTF_PARSE_ERROR", mtf_msg_string, "Not enough parts in single MTF message")
+
+        if len(parts) < 9:
+            log_parser_error("MTF_PARSE_ERROR", mtf_msg_string, f"Expected 9 fields, got {len(parts)}")
             return None
 
-        # ===== OHLC =====
-        ohlc_str = parts[0]
-        raw_history = ohlc_str.split(';')
-        ohlc_list = []
+        tf_name = parts[0].strip()
 
-        for candle in raw_history:
-            if not candle or candle.strip() == '':
-                continue
-            try:
-                o, h, l, c = map(float, candle.split(','))
-                ohlc_list.append([o, h, l, c])
-            except ValueError:
-                continue
-        
-        if not ohlc_list:
+        try:
+            slope     = safe_float(parts[1])
+            dist_A    = safe_float(parts[2])
+            position  = safe_float(parts[3])
+            sitting   = safe_float(parts[4])
+            direction = safe_int(parts[5])
+            mirror    = safe_float(parts[6])
+            gap       = safe_float(parts[7])
+            close     = safe_float(parts[8])
+        except Exception as e:
+            log_parser_error("MTF_PARSE_ERROR", mtf_msg_string, f"Field conversion failed: {e}")
             return None
 
-        tf_name = parts[4]
-        features = parts[5:]
-        
-        print("TF:", tf_name, "LAST 7:", features[-7:])
-
-        # ===== NEW: GEOMETRY EXTRACTION =====
-        slope = dist_A = position = sitting = mirror = gap = 0.0
-        direction = 0
-
-        if len(features) >= 7:
-            try:
-                slope     = float(features[-7])
-                dist_A    = float(features[-6])
-                position  = float(features[-5])
-                sitting   = float(features[-4])
-                direction = int(features[-3])
-                mirror    = float(features[-2])
-                gap       = float(features[-1])
-            except:
-                pass
-
-        # ===== RETURN FULL STRUCTURE =====
         return {
             'tf_name': tf_name,
-            'candles': len(ohlc_list),
-            'open': ohlc_list[-1][0],
-            'high': ohlc_list[-1][1],
-            'low': ohlc_list[-1][2],
-            'close': ohlc_list[-1][3],
-
-            # ✅ ADD THESE (CRITICAL)
+            'close': close,
             'slope': slope,
             'dist_A': dist_A,
             'position': position,
@@ -848,36 +827,22 @@ def parse_mql5_data(data_string):
             return None, None, None
 
         # ====================== MTF DATA BLOCK ======================
-        if data_string.startswith("MTF_DATA\n"):
+        if "MTF_DATA" in data_string:
             global_mtf_mode = True
-            mtf_block = data_string[len("MTF_DATA\n"):].strip()
-            single_tf_messages = [msg.strip() for msg in mtf_block.split('\n') if msg.strip()]
+            # Extract block after header
+            mtf_block = data_string.split("MTF_DATA", 1)[1].strip()
+            # MTF data might come in a single packet with internal newlines
+            single_tf_messages = [msg.strip() for msg in mtf_block.split('\n') if msg.strip() and '|' in msg]
 
             parsed_mtf_data = {}
             for msg in single_tf_messages:
                 parsed_tf = parse_single_mtf_message(msg)
                 if parsed_tf and parsed_tf.get('tf_name'):
-                    parsed_mtf_data[parsed_tf['tf_name']] = {
-                    'candles': parsed_tf['candles'],
-                    'open': parsed_tf.get('open', 0),
-                    'high': parsed_tf.get('high', 0),
-                    'low': parsed_tf.get('low', 0),
-                    'close': parsed_tf.get('close', 0),
-
-                    # ===== GEOMETRY (NEW - REQUIRED) =====
-                    'slope': parsed_tf.get('slope', 0),
-                    'dist_A': parsed_tf.get('dist_A', 0),
-                    'position': parsed_tf.get('position', 0),
-                    'sitting': parsed_tf.get('sitting', 0),
-                    'direction': parsed_tf.get('direction', 0),
-                    'mirror': parsed_tf.get('mirror', 0),
-                    'gap': parsed_tf.get('gap', 0)
-                }
+                    parsed_mtf_data[parsed_tf['tf_name']] = parsed_tf
 
             global_mtf_data = parsed_mtf_data
             # ===== MTF SIGNAL ENGINE =====
             if len(parsed_mtf_data) > 0:
-
                 high = [v for k,v in parsed_mtf_data.items() if k in ["H4","H1"]]
                 mid  = [v for k,v in parsed_mtf_data.items() if k in ["M30","M15"]]
                 low  = [v for k,v in parsed_mtf_data.items() if k in ["M5","M1"]]
@@ -893,15 +858,31 @@ def parse_mql5_data(data_string):
                 if abs(high_slope) > 1e-6 and abs(mid_gap) < 0.003 and low_sit > 0.6:
                     print("🔥 MTF SIGNAL")
                 else:
-                    print("no mtf signal")
+                    pass
             print(f"[MTF] Received data for {len(parsed_mtf_data)} timeframes: {list(parsed_mtf_data.keys())}")
-            return None, None, (global_candle_details or {}, global_mtf_data)
+            return None, None, ('MTF_ONLY', global_candle_details or {}, global_mtf_data)
 
         # ====================== NORMAL SINGLE TF MODE ======================
         global_mtf_mode = False
         parts = data_string.split('|')
+
+        print("=" * 80)
+        print("PART COUNT =", len(parts))
+
+        for i, p in enumerate(parts):
+            print(f"PART[{i}] = {p[:100]}")
+        print("=" * 80)
+
+        print("PART COUNT =", len(parts))
+        print("PART[0] =", parts[0][:100])
+        print("PART[1] =", parts[1][:100] if len(parts) > 1 else "N/A")
+        
+        print("EXPECTED < 5")
+        print("ACTUAL =", len(parts))
+        
         if len(parts) < 5:
             log_parser_error("MAIN_PARSE_ERROR", data_string[:300], f"Not enough parts: {len(parts)}")
+            print("RAW PARTS:", parts[:10])
             return None, None, None
 
         # --- OHLC History ---
@@ -955,6 +936,13 @@ def parse_mql5_data(data_string):
         features.update(default_features)
 
         # Parse MT5 sent features
+        # Field order must match SendAndReceiveSocketData in MT5:
+        # history_str(0)|symbol(1)|time(2)|set_count(3)|timeframe(4)|
+        # set_magnitude(5)|bars_duration(6)|dist_from_be(7)|active_TL_option(8)|dynamic_TL_slope(9)|
+        # dynamic_TL_distance_current_price(10)|channel_top_distance_current_price(11)|channel_bottom_distance_current_price(12)|channel_width(13)|
+        # rejection_candle_total_range(14)|rejection_candle_body_size(15)|rejection_candle_upper_wick_size(16)|rejection_candle_lower_wick_size(17)|
+        # rejection_candle_is_large_relative_to_average(18)|rejection_candle_volume(19)|bearish_sequence_length(20)|
+        # trend_m15(21)|trend_h1(22)|trend_h4(23)|snr_weight(24)|is_at_snr(25)|tp_m15(26)|tp_h1(27)|sync_pending(28)
         mt5_feature_keys = [
             'set_magnitude', 'bars_duration', 'dist_from_be', 'active_TL_option',
             'dynamic_TL_slope', 'dynamic_TL_distance_current_price',
@@ -1086,12 +1074,11 @@ def socket_listener():
     while not global_stop_event.is_set():
         try:
             client_socket, addr = server_socket.accept()
-            # Handle immediate HELLO
-            try:
-                hello = client_socket.recv(64).decode().strip()
-                if hello == "HELLO":
-                    client_socket.sendall(b"OK\n")
-            except: pass
+            # NOTE: Do NOT read from the socket here. MT5 sends "HELLO|SYMBOL\n" once
+            # connected, and that needs to reach handle_client()'s recv loop / process_payload()
+            # so the symbol can be extracted and explore_7_sets() can be triggered. Reading it
+            # here (even just 64 bytes) consumes those bytes off the stream and they never
+            # reach handle_client, silently breaking the handshake and the auto-exploration feature.
             threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True).start()
         except socket.timeout:
             continue
@@ -1272,6 +1259,9 @@ def handle_client(client_socket, addr):
     global_socket_status = "CONNECTED"
     last_heartbeat_time = time.time()
     recv_buffer = ""
+    
+    # NEW: Queue for non-blocking AI work
+    ai_work_queue = queue.Queue()
 
     print(f"[SOCKET] Accepted connection from {addr}")
     print("="*60)
@@ -1286,6 +1276,67 @@ def handle_client(client_socket, addr):
 
     client_socket.settimeout(0.2)
     recv_buffer = ""
+    
+    def ai_worker():
+        """Background thread: Process AI work without blocking socket I/O."""
+        while not global_stop_event.is_set():
+            try:
+                task = ai_work_queue.get(timeout=0.1)
+                if task is None:  # Poison pill to exit
+                    break
+                
+                ohlc_df, features, symbol = task
+                
+                try:
+                    current_brain = get_brain(symbol)
+                    if current_brain.learning_status == "INITIALIZING":
+                        current_brain.learning_status = "LEARNING" if current_brain.brain_age < 50 else "EVOLVING"
+                    
+                    # Perform prediction in background (non-blocking)
+                    score, direction, max_hold = current_brain.predict(features)
+                    
+                    # Send response back through socket (quick operation)
+                    try:
+                        trend_m15 = features.get('trend_m15', features.get('g_trend_m15', 0))
+                        trend_h1 = features.get('trend_h1', features.get('g_trend_h1', 0))
+                        trend_h4 = features.get('trend_h4', features.get('g_trend_h4', 0))
+                        
+                        threshold = 0.65
+                        if current_brain.brain_age >= 20:
+                            buy_ok = (score > threshold and trend_h1 == 1 and trend_h4 == 1)
+                            sell_ok = (score > threshold and trend_h1 == -1 and trend_h4 == -1)
+                            
+                            if buy_ok:
+                                client_socket.sendall(b"TRADE|BUY\n")
+                                print(f">>> TRIGGER BUY | score={score:.2f} > {threshold}")
+                            elif sell_ok:
+                                client_socket.sendall(b"TRADE|SELL\n")
+                                print(f">>> TRIGGER SELL | score={score:.2f} > {threshold}")
+                            else:
+                                response = f"{score:.4f}|0|{max_hold}\n"
+                                client_socket.sendall(response.encode('utf-8'))
+                                print(f"[HOLD] score={score:.2f}")
+                        else:
+                            response = f"{score:.4f}|{direction}|{max_hold}\n"
+                            client_socket.sendall(response.encode('utf-8'))
+                            print(f"[BOOTSTRAP] Score={score:.4f} (age {current_brain.brain_age})")
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass  # Client disconnected, will be caught in main loop
+                    
+                    # Offline learning in background
+                    if current_brain.brain_age < 20 and len(ohlc_df) >= 10:
+                        try:
+                            simulate_trades_on_ohlc(ohlc_df, features)
+                        except Exception as e:
+                            logger.debug(f"[AI WORKER] Simulation error: {e}")
+                        
+                except Exception as e:
+                    logger.error(f"[AI WORKER] Prediction error: {e}")
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"[AI WORKER] Unexpected error: {e}")
 
     def process_ui_commands():
         try:
@@ -1305,25 +1356,30 @@ def handle_client(client_socket, addr):
         if not data:
             return
 
-        if (data == "HEARTBEAT" or data.startswith("HEARTBEAT") or data.startswith("PING") or data.startswith("PONG")):
+        if "HEARTBEAT" in data or "PING" in data or "PONG" in data:
             print("[HEARTBEAT] Received heartbeat from MT5.")
             last_heartbeat_time = time.time()
             client_socket.sendall(b"PONG\n")
-            time.sleep(0.1)
             return
         
-        if data.startswith("HELLO"):
-            global global_explored_symbols, global_mt5_symbol
+        if "HELLO" in data:
+            print(f"[SOCKET] Received HELLO from MT5: {data}")
             client_socket.sendall(b"OK\n")
             
-            # Only explore once per symbol. TF switches won't trigger it again.
-            if global_mt5_symbol and global_mt5_symbol not in global_explored_symbols:
-                print(f"[EXPLORE] Running exploration for {global_mt5_symbol}...")
-                global_explored_symbols.add(global_mt5_symbol)
+            # Extract symbol if present: "HELLO|BTCUSD"
+            current_sym = "DEFAULT"
+            if "|" in data:
+                try:
+                    current_sym = data.split("|")[1].strip()
+                except:
+                    pass
+            elif global_mt5_symbol != "UNKNOWN":
+                current_sym = global_mt5_symbol
+
+            if current_sym not in global_explored_symbols:
+                print(f"[EXPLORE] Scheduling exploration for {current_sym}...")
+                global_explored_symbols.add(current_sym)
                 threading.Thread(target=explore_7_sets, args=(client_socket,), daemon=True).start()
-            else:
-                print(f"[EXPLORE] Skip - {global_mt5_symbol} already explored")
-            
             return
 
         if data.startswith('{'):
@@ -1341,10 +1397,15 @@ def handle_client(client_socket, addr):
                 pass
             return
 
+        print("\n" + "="*80)
+        print("RAW PAYLOAD FROM MT5")
+        print("="*80)
+        print(repr(data[:3000]))
+        print("="*80)
         ohlc_df, features, extra_data = parse_mql5_data(data)
 
-        if extra_data and extra_data[0] is None and extra_data[1]:
-            global_candle_details, global_mtf_data = extra_data
+        if extra_data and extra_data[0] == 'MTF_ONLY':
+            _, global_candle_details, global_mtf_data = extra_data
             plot_update_queue.put({
                 'ohlc': ohlc_data_history,
                 'scores': pd.Series(ai_score_history) if ai_score_history else pd.Series(),
@@ -1436,39 +1497,45 @@ def handle_client(client_socket, addr):
         })
 
     try:
-        client_socket.settimeout(0.2)
+        client_socket.settimeout(0.1)
         while not global_stop_event.is_set():
             process_ui_commands()
             try:
                 chunk = client_socket.recv(BUFFER_SIZE).decode('utf-8', errors='ignore')
                 if not chunk:
-                    time.sleep(0.1)
-                    continue
+                    break
                 recv_buffer += chunk
                 last_heartbeat_time = time.time()
             except socket.timeout:
-                if recv_buffer.strip():
-                    process_payload(recv_buffer)
-                    recv_buffer = ""
+                process_ui_commands()
                 continue
             except (ConnectionResetError, BrokenPipeError):
                 break
 
-            while '\x00' in recv_buffer:
-                packet, recv_buffer = recv_buffer.split('\x00', 1)
-                process_payload(packet)
-
-            while '\n' in recv_buffer and len(recv_buffer) < 256:
+            # Process line by line (standard for this protocol)
+            while '\n' in recv_buffer:
                 line, recv_buffer = recv_buffer.split('\n', 1)
-                process_payload(line)
+                clean_line = line.strip()
+                if clean_line:
+                    # --- FIX: Guardrail against silent internal processing exceptions ---
+                    try:
+                        print("RECEIVED LENGTH =", len(clean_line))
+                        process_payload(clean_line)
+                    except Exception as payload_error:
+                        print(f"[DATA EXCEPTION] Error processing line: {payload_error}")
+                        print(f"[DATA EXCEPTION] Raw Line Content: {clean_line}")
+                        continue  # Keep thread alive, move to the next clean network packet
+                    # ---------------------------------------------------------------------
 
-            if len(recv_buffer) > 4000:
-                if recv_buffer.count('|') >= 20:
-                    process_payload(recv_buffer)
-                    recv_buffer = ""
-                elif recv_buffer.startswith("MTF_DATA\n") and recv_buffer.count('\n') >= 6:
-                    process_payload(recv_buffer)
-                    recv_buffer = ""
+            # Safety net: MT5 always terminates every message with '\n', so a clean message
+            # never lingers unterminated in recv_buffer for long. If recv_buffer grows
+            # pathologically large with no newline, the connection is desynced — discard it
+            # WITHOUT attempting to parse it (parsing a known-incomplete fragment is what
+            # caused the PART COUNT=227 / garbage-field corruption previously).
+            MAX_UNTERMINATED_BUFFER = 200_000  # generous; real messages are a few KB
+            if len(recv_buffer) > MAX_UNTERMINATED_BUFFER:
+                print(f"[SOCKET] WARNING: {len(recv_buffer)} bytes with no newline — connection desynced, discarding")
+                recv_buffer = ""
     except (ConnectionResetError, BrokenPipeError):
         pass # Normal on TF change
     except socket.timeout:
